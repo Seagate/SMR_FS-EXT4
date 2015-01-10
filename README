@@ -1,0 +1,112 @@
+README for EXT4 SMRFFS
+Seagate SMR Friendly File System -EXT4
+Adrian Palmer
+adrian.palmer@seagate.com
+Seagate Technology
+January 2015
+
+What is SMRFFS?
+SMRFFS is an addition to the popular EXT4 to enable support for devices that use the ZBC or ZAC standards.  Project scope includes support for Host Aware (HA) devices, may include support for Host Managed (HM) devices, and will include ability to restrict behavior to enforce a common ZBC / ZAC command set protocol.  
+
+
+Zoned Block Commands Standards
+
+New methods are being standardized to establish a communication protocol for zoned block devices.  Zoned Block Command set (ZBC) cover SCSI devices, and the standard is being ratified through the T10 organization.  ATA standards will be ratified through the T13 organization under the title ZAC (Zoned-device ATA Command set).  
+
+Latest specifications can be found on www.t10.org and www.t13.org.
+	As of this writing, ZBC has completed letter ballot. Approval is expected in early 2015.  
+	A draft of ZAC that includes the capabilities of ZBC is currently under development. ZAC approval should follow ZBC approval within three to four months.
+
+ZAC and ZBC command sets cover both Host Aware (HA) and Host Managed (HM) devices.  SMR drives are expected to saturate the HDD market over the coming years.  Without this modification (ZBC command support), HM will NOT work with traditional filesystems.  With this modification, HA will demonstrate performance and determinism -- as found in non-SMR drives -- in traditional & new applications.
+
+SMR drives have a specific idiosyncrasy: (a) drive managed drives prefer non-interrupted sequential writes through a zone, (b) host aware drives prefer forward writes within a zone, and (c) host managed drives required forward writes within a zone (along with other constraints). By optimizing sequential file layout -- in-order writes and garbage collection (idle-time defragmentation) -- the file system should work with the drive to reduce non-preferred or disallowed behavior, greatly decreasing latency for applications.
+
+
+HDD Availability
+
+Seagate manufactures and supports SMR Drive Managed (DM) and SMR Host Aware (HA) drives.  Seagate does not currently manufacture SMR Host Managed (HM) drives.
+
+
+What changes are needed for SMRFFS?
+
+There are significant changes needed to enable EXT4 to work with SMR ZBC/ZAC drives.  However, a major goal is to keep the EXT4 name and be backwards compatible with existing installations.
+
+Kernel:
+	The kernel will need to add the additional commands that are enabled with the ZBC specification.  These will be added to the drivers (AHCI, SCSI) and the associated libraries (libata, libsas).
+	
+	The kernel will also need to be modified at the I/O scheduler.  Existing elevators do not guarantee that requests will be delivered to the drive in the correct order, but only guarantee that each drive has a time slot, and services requests that are in its queue.  An elevator that considers not only time, but also completeness of a write will have to be considered.
+
+	We are exploring the use of the device mapper for a scratchpad in the case of zone rewrites and metadata updates.  
+	
+
+EXT4:
+	EXT4 will have several additional requirements and changes:
+	
+dev v0.1	
+	8k clusters, for 256MiB block groups
+	Mandate Copy-on-Write
+	Disable Extents
+	Sparse superblock
+	(Temporary) disable journaling
+
+dev v0.2	
+	Reorder requests to be forward-write only
+	Restrict Inode maps and bitmaps to zones 1 & 2
+	Restrict Journaling to zones 3 & 4
+	Implement scratchpad for metadata
+	Restrict R/W accross zone/blockgroup boundaries
+	Add SMR bit flag
+
+dev v0.3
+	update low level driver - AHCI
+	update ATA - new commands
+	update SCSI mid layer - new commands
+	update SD ioctls - new commands, zone cache
+	add zone friendly IO scheduler elevator
+	update Device Mapper - zone rewrite scratchpad
+	Improve Page Cache order handling
+	
+dev v0.4
+	Read drive logs and use HA information
+	Repurposing of the data bitmap to align with a new writepointer
+	Implement ResetZonePointer from Discard model
+
+dev v0.5
+	Implement Journaling improvements (circular buffer)
+	Implement Garbage collection, cleanup and colocation mechanics
+	
+dev v0.7
+	Review and implement strictness criteria for HM
+	
+
+Utilities:
+
+mke2fs
+	add -zoned flag
+	
+	
+When are these changes expected to be available?
+
+Seagate wishes to be cooperative and open on this project.  Seagate is operating under GPLv2 on this project.  Interim releases will be available on a general schedule, but updates/bug fixes will be as needed.  Testing will be performed by Seagate, but vetting will happen within the community.
+
+Expected dates:
+	Dev v0.1 - Undergoing internal testing.
+	Dev v0.2,0.3 - February 2015
+	Dev v0.4 - March 2015
+			Discussed at LSF/MM
+			Presented at Vault Storage Conference
+	Dev v0.5 - June 2015
+			Presented at MSST 2015
+	Dev v0.7 - As time permits
+	
+Releases will be available at http://www.github.com/seagate/SMR_FS_EXT4
+
+How is Seagate cooperative in this project?
+
+Under the GPLv2 license, Seagate is willing to share code with partners who will contribute to Seagate's efforts as Seagate contributes to the community.  Seagate is actively seeking help, from corporations or individuals.  Please contact the author to provide assistance.
+
+Seagate seeks no revenue directly from this filesystem. It is given as a gift to the community.   
+
+Seagate’s modifications to EXT4 are distributed under the GPLv2 license "as is," without technical support, and WITHOUT ANY WARRANTY, without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
+You should receive a copy of the GNU Lesser General Public License along with any updates/patches.  If not, see <http://www.gnu.org/licenses/>.
