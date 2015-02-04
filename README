@@ -3,28 +3,33 @@ Seagate SMR Friendly File System -EXT4
 Adrian Palmer
 adrian.palmer@seagate.com
 Seagate Technology
-January 2015
+March 2015
+Kernel Version 4.0rc1
 
 What is SMRFFS?
 SMRFFS is an addition to the popular EXT4 to enable support for devices that use the ZBC or ZAC standards.  Project scope includes support for Host Aware (HA) devices, may include support for Host Managed (HM) devices, and will include ability to restrict behavior to enforce a common ZBC / ZAC command set protocol.  
 
+Standards:
+Zoned Block Commands (ZBC)
+Zoned-device ATA Commands (ZAC)
 
-Zoned Block Commands Standards
-
-New methods are being standardized to establish a communication protocol for zoned block devices.  Zoned Block Command set (ZBC) cover SCSI devices, and the standard is being ratified through the T10 organization.  ATA standards will be ratified through the T13 organization under the title ZAC (Zoned-device ATA Command set).  
+New methods are being standardized to establish a communication protocol for zoned block devices.  ZBC covers SCSI devices, and the standard is being ratified through the T10 organization.  ATA standards will be ratified through the T13 organization under the title ZAC.  
 
 Latest specifications can be found on www.t10.org and www.t13.org.
-	As of this writing, ZBC has completed letter ballot. Approval is expected in early 2015.  
-	A draft of ZAC that includes the capabilities of ZBC is currently under development. ZAC approval should follow ZBC approval within three to four months.
+As of this writing, ZBC has completed letter ballot. Approval is expected in early 2015.  
+
+A draft of ZAC that includes the capabilities of ZBC is currently under development. ZAC approval should follow ZBC approval within three to four months.
 
 ZAC and ZBC command sets cover both Host Aware (HA) and Host Managed (HM) devices.  SMR drives are expected to saturate the HDD market over the coming years.  Without this modification (ZBC command support), HM will NOT work with traditional filesystems.  With this modification, HA will demonstrate performance and determinism -- as found in non-SMR drives -- in traditional & new applications.
 
-SMR drives have a specific idiosyncrasy: (a) drive managed drives prefer non-interrupted sequential writes through a zone, (b) host aware drives prefer forward writes within a zone, and (c) host managed drives required forward writes within a zone (along with other constraints). By optimizing sequential file layout -- in-order writes and garbage collection (idle-time defragmentation) -- the file system should work with the drive to reduce non-preferred or disallowed behavior, greatly decreasing latency for applications.
+SMR drives have a specific idiosyncrasy: (a) drive managed drives prefer non-interrupted sequential writes through a zone, (b) host aware drives prefer forward writes within a zone, and (c) host managed drives require forward writes within a zone (along with other constraints). By optimizing sequential file layout -- in-order writes and garbage collection (idle-time defragmentation and compaction) -- the file system should work with the drive to reduce non-preferred or disallowed behavior, greatly decreasing latency for applications.
 
 
 HDD Availability
 
 Seagate manufactures and supports SMR Drive Managed (DM) and SMR Host Aware (HA) drives.  Seagate does not currently manufacture SMR Host Managed (HM) drives.
+
+Seagate has 2 drives shipping that are SMR-DM.  Seagate's new 8TB Archive HDD v2 drive is SMR-HA.
 
 
 What changes are needed for SMRFFS?
@@ -32,74 +37,131 @@ What changes are needed for SMRFFS?
 There are significant changes needed to enable EXT4 to work with SMR ZBC/ZAC drives.  However, a major goal is to keep the EXT4 name and be backwards compatible with existing installations.
 
 Kernel:
-	The kernel will need to add the additional commands that are enabled with the ZBC specification.  These will be added to the drivers (AHCI, SCSI) and the associated libraries (libata, libsas).
+The kernel will need to add the additional commands that are enabled with the ZBC specification.  These will be added to the drivers (AHCI, SCSI) and the associated libraries (libata, libsas).
 	
-	The kernel will also need to be modified at the I/O scheduler.  Existing elevators do not guarantee that requests will be delivered to the drive in the correct order, but only guarantee that each drive has a time slot, and services requests that are in its queue.  An elevator that considers not only time, but also completeness of a write will have to be considered.
+The kernel will be explored as to the need to be modified at the I/O scheduler.  Existing elevators do not guarantee that requests will be delivered to the drive in the correct order, but only guarantee that each drive has a time slot, and services requests that are in its queue.  An elevator that considers not only time, but also completeness of a write will have to be considered.
 
-	We are exploring the use of the device mapper for a scratchpad in the case of zone rewrites and metadata updates.  
+We are exploring the use of the device mapper for a scratchpad in the case of zone rewrites and metadata updates.  We're beginning to plan exploration of the updates required to md for RAID devices.  We're also looking at blockdev updates: Among our goals is to allow not only the FS, but other kernel processes to access the ZBD data.  Userland processes will also need to get ZBD information.
 	
+The page cache will have be explored to filter the pages sent to the I/O scheduler (for the disk) are as complete and as ordered as possible.  This cannot be based solely on age or cache space. SCSI and Blockdev layers will also have to have outstanding bugs fixed.
 
 EXT4:
-	EXT4 will have several additional requirements and changes:
+EXT4 will have several additional requirements and changes:
+
+The partition and FS will be zone aligned at creation. 
+(fdisk)
+The FS will have BGs that match the zone alignment and size at creation. 
+(flex_bg + some from bigalloc)
+The FS GD databitmap will be replaced (translated with) the WP offset.
+FS Metadata will be packed into zone/BG 0 & 1. (packed_meta_blocks)
+FS journal *may* have metadata and will be appending.  
+Can be a circular buffer of zones.
+
+FS will have a *strict* forward looking allocator scheme. 
+(allocator)
+FS will have a sense condition that triggers defragmentation 
+(current Databitmap vs Inodebitmap comparison check).
+FS will have access to a scratchpad zone for defragmentation
+(either as a *temporary* zone remap, or as a cache in the DM) 
+FS will have a discard that issues RESET_WRITE_POINTER
+
+FS metadata will be updated to store zone information.
+sb will identify FS as ZBD aware
+ 	BG will be size of zone
+ 	GD will have condition/type of zone
+ 	databitmap will have WP
+
+Many of these updates of SMRFFS align with Ted T'so's vision for SMR: (https://docs.google.com/spreadsheets/d/1QdUYZT1gjfHPviMUxdVic85Z52Z4BT8ogH8rW1Y9dzw/edit#gid=1)
+
+Core-01: Per standards and implemented in v0.3
+Core-02: Implemented in FS, BlockDev, and SD layers
+Core-03: Implemented in FS, and in BlockDev
+Core-04: Unneeded/limited use.  ZBD devices will work with SMR and other media. Information embedded in SMRFFS
+Core-05: This is meant for legacy FSs on SMR, not for SMRFFS
+Core-06: This is v0.3
+EXT4-01: SMRFFS has this slated for v0.5
+EXT4-02: Possible solution for meta-data in SMRFFS
+EXT4-03: A core requirement of SMRFFS
+
 	
-dev v0.1	
+dev v0.1 - Completed and tested in all variations	
 	8k clusters, for 256MiB block groups
 	Mandate Copy-on-Write
 	Disable Extents
 	Sparse superblock
+	flex_bg
+	bigalloc
+	packed_meta_data
 	(Temporary) disable journaling
 
+We settled on -E packed_meta_data,num_backup_sb=0 -O sparse_super2 as our base moving forward.  However, Bigalloc deserves a second look because of active developement by the EXT4 developers.
+
+This configuration increases disk seeks by consolidating the meta at the OD of the disk, but it works better for SMR idiosyncrasies.  
+
 dev v0.2	
-	Reorder requests to be forward-write only
+	Reorder requests to be forward-write only --completed
 	Restrict Inode maps and bitmaps to zones 1 & 2
 	Restrict Journaling to zones 3 & 4
-	Implement scratchpad for metadata
+	Implement scratchpad for metadata --pushed to v5
 	Restrict R/W accross zone/blockgroup boundaries
-	Add SMR bit flag
+	Add SMR bit flag --completed
 
 dev v0.3
-	update low level driver - AHCI
-	update ATA - new commands
-	update SCSI mid layer - new commands
-	update SD ioctls - new commands, zone cache
-	add zone friendly IO scheduler elevator
-	update Device Mapper - zone rewrite scratchpad
-	Improve Page Cache order handling
+	update low level driver - AHCI --completed
+	update ATA - new commands --completed 2/5
+	update SCSI mid layer - new commands --completed 2/5
+	update SD ioctls - new commands, zone cache --preliminarily completed
+	add zone friendly IO scheduler elevator --pushed to v4.5
+	update Device Mapper - zone rewrite scratchpad --pushed to v5
+	Improve Page Cache order handling --pushed to v4.5
+	updates to sd --functional
 	
 dev v0.4
-	Read drive logs and use HA information
-	Repurposing of the data bitmap to align with a new writepointer
-	Implement ResetZonePointer from Discard model
+	Read drive logs and use HA information --implemented in userland
+	Repurposing of the data bitmap to align with a new writepointer --completed
+	Implement ResetZonePointer from Discard model --pushed to v5
 
 dev v0.5
 	Implement Journaling improvements (circular buffer)
+		Based off Ted T'so's previous proposals.
 	Implement Garbage collection, cleanup and colocation mechanics
 	
 dev v0.7
 	Review and implement strictness criteria for HM
 	
 
+Dev v0.3 is being actively updated across various companies.  Collaboration and merging is needed.  Seagate is cooperating with Hauwei for the SD driver.  Dr. Hannes Reinecke of SUSE is actively developing the IO stack for SMR, and HGST has released patches for libzbc and SMR-HM on SAS drives.  We expect many, many more entities to sign on with SMRFFS, as there are many business cases out there.  
+
+Changes presented here were introduced and debated at LSF/MM and Vault Storage conference.  The approach received some criticism, but was generally accepted a needed change.  The conversations continue, and we encourage all to collaborate.  
+
+
 Utilities:
 
 mke2fs
-	add -zoned flag
+	add -E ZBD flag --completed
+dumpe2fs
+tune2fs
+fdisk
+etc...
+
 	
 	
 When are these changes expected to be available?
 
 Seagate wishes to be cooperative and open on this project.  Seagate is operating under GPLv2 on this project.  Interim releases will be available on a general schedule, but updates/bug fixes will be as needed.  Testing will be performed by Seagate, but vetting will happen within the community.
 
-Expected dates:
-	Dev v0.1 - Undergoing internal testing.
-	Dev v0.2,0.3 - February 2015
-	Dev v0.4 - March 2015
+Expected delivery dates:
+	*Dev v0.1 - Undergoing internal testing.
+	*Dev v0.2,0.3 - February 2015
+	*Dev v0.4 - March 2015
 			Discussed at LSF/MM
 			Presented at Vault Storage Conference
+			alpha code posted -- Kernel version 4.0rc1
 	Dev v0.5 - June 2015
 			Presented at MSST 2015
 	Dev v0.7 - As time permits
 	
-Releases will be available at http://www.github.com/seagate/SMR_FS_EXT4
+Releases will be available at http://www.github.com/seagate/SMR_FS-EXT4
 
 How is Seagate cooperative in this project?
 
@@ -107,6 +169,7 @@ Under the GPLv2 license, Seagate is willing to share code with partners who will
 
 Seagate seeks no revenue directly from this filesystem. It is given as a gift to the community.   
 
-Seagate’s modifications to EXT4 are distributed under the GPLv2 license "as is," without technical support, and WITHOUT ANY WARRANTY, without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+Seagate's modifications to EXT4 are distributed under the GPLv2 license "as is," without technical support, and WITHOUT ANY WARRANTY, without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 
 You should receive a copy of the GNU Lesser General Public License along with any updates/patches.  If not, see <http://www.gnu.org/licenses/>.
+

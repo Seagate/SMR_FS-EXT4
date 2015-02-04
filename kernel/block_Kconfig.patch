@@ -1,0 +1,20 @@
+diff --git a/block/Kconfig b/block/Kconfig
+index 161491d..cf82339 100644
+--- a/block/Kconfig
++++ b/block/Kconfig
+@@ -100,6 +100,15 @@ config BLK_DEV_THROTTLING
+ 
+ 	See Documentation/cgroups/blkio-controller.txt for more information.
+ 
++config BLK_ZONED
++	tristate "Support for ZONED block devices."
++	default y
++	---help---
++	Block layer Zoned device support. Zoned devices are SMR Host Aware
++	and SMR Host Managed devices. Typically 8TB and higher density
++	drives are Zoned SMR devices. This supports identifying Zone
++	information on such drives.
++
+ config BLK_CMDLINE_PARSER
+ 	bool "Block device command line partition parser"
+ 	default n

@@ -1,0 +1,18 @@
+diff --git a/block/scsi_ioctl.c b/block/scsi_ioctl.c
+old mode 100644
+new mode 100755
+index e1f71c3..982a3e9
+--- a/block/scsi_ioctl.c
++++ b/block/scsi_ioctl.c
+@@ -707,6 +707,11 @@ int scsi_verify_blk_ioctl(struct block_device *bd, unsigned int cmd)
+ 	case SG_GET_RESERVED_SIZE:
+ 	case SG_SET_RESERVED_SIZE:
+ 	case SG_EMULATED_HOST:
++	case SCSI_IOCTL_INQUIRY:
++	case SCSI_IOCTL_REPORT_ZONES:
++	case SCSI_IOCTL_RESET_WP:
++	case SCSI_IOCTL_OPEN_ZONE:
++	case SCSI_IOCTL_CLOSE_ZONE:
+ 		return 0;
+ 	case CDROM_GET_CAPABILITY:
+ 		/* Keep this until we remove the printk below.  udev sends it

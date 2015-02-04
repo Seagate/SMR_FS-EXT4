@@ -1,0 +1,40 @@
+NON_SEQ_AND_RESET(0): found 29809 zones
+  count: 29809, same 2 (last zone differs by size), max_lba 15628053167
+  start: 0, len 524288, wptr 0
+   type: 3(SEQ_WRITE_PREFERRED) reset:0 non-seq:0, zcond:1
+  start: 524288, len 524288, wptr 524288
+   type: 3(SEQ_WRITE_PREFERRED) reset:0 non-seq:0, zcond:1
+  start: 1048576, len 524288, wptr 1048576
+   type: 3(SEQ_WRITE_PREFERRED) reset:0 non-seq:0, zcond:1
+  start: 1572864, len 524288, wptr 1572864
+   type: 3(SEQ_WRITE_PREFERRED) reset:0 non-seq:0, zcond:1
+  start: 2097152, len 524288, wptr 2097152
+   type: 3(SEQ_WRITE_PREFERRED) reset:0 non-seq:0, zcond:1
+  start: 2621440, len 524288, wptr 2621440
+   type: 3(SEQ_WRITE_PREFERRED) reset:0 non-seq:0, zcond:1
+  start: 3145728, len 524288, wptr 3145728
+   type: 3(SEQ_WRITE_PREFERRED) reset:0 non-seq:0, zcond:1
+  start: 3670016, len 524288, wptr 3670016
+   type: 3(SEQ_WRITE_PREFERRED) reset:0 non-seq:0, zcond:1
+  start: 4194304, len 524288, wptr 4194304
+   type: 3(SEQ_WRITE_PREFERRED) reset:0 non-seq:0, zcond:1
+  start: 4718592, len 524288, wptr 4718592
+   type: 3(SEQ_WRITE_PREFERRED) reset:0 non-seq:0, zcond:1
+  start: 5242880, len 524288, wptr 5242880
+   type: 3(SEQ_WRITE_PREFERRED) reset:0 non-seq:0, zcond:1
+  start: 5767168, len 524288, wptr 5767168
+   type: 3(SEQ_WRITE_PREFERRED) reset:0 non-seq:0, zcond:1
+  start: 6291456, len 524288, wptr 6291456
+   type: 3(SEQ_WRITE_PREFERRED) reset:0 non-seq:0, zcond:1
+  start: 6815744, len 524288, wptr 6815744
+   type: 3(SEQ_WRITE_PREFERRED) reset:0 non-seq:0, zcond:1
+  start: 7340032, len 524288, wptr 7340032
+   type: 3(SEQ_WRITE_PREFERRED) reset:0 non-seq:0, zcond:1
+  start: 7864320, len 524288, wptr 7864320
+   type: 3(SEQ_WRITE_PREFERRED) reset:0 non-seq:0, zcond:1
+  start: 8388608, len 524288, wptr 8388608
+   type: 3(SEQ_WRITE_PREFERRED) reset:0 non-seq:0, zcond:1
+  start: 8912896, len 524288, wptr 8912896
+   type: 3(SEQ_WRITE_PREFERRED) reset:0 non-seq:0, zcond:1
+  start: 9437184, len 524288, wptr 9437184
+   type: 3(SEQ_WRITE_PREFERRED) reset:0 non-seq:0, zcond:1

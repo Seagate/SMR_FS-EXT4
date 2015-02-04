@@ -1,0 +1,35 @@
+diff --git a/fs/ext4/super.c b/fs/ext4/super.c
+index e061e66..403d989 100644
+--- a/fs/ext4/super.c
++++ b/fs/ext4/super.c
+@@ -3527,6 +3527,10 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
+ 		sbi->s_csum_seed = ext4_chksum(sbi, ~0, es->s_uuid,
+ 					       sizeof(es->s_uuid));
+ 
++   /* Set Media options -- Possible ZBD */
++   sbi->ext4_forward_write = (es->s_disk_layout & DRIVE_SMR)?1:0;
++   sbi->ext4_ZBD_info = (es->s_disk_layout & (DRIVE_SMR_HA & DRIVE_SMR_HM))?1:0;
++
+ 	/* Set defaults before we parse the mount options */
+ 	def_mount_opts = le32_to_cpu(es->s_default_mount_opts);
+ 	set_opt(sb, INIT_INODE_TABLE);
+@@ -3850,10 +3854,15 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
+ 	if (sbi->s_blocks_per_group == clustersize << 3)
+ 		set_opt2(sb, STD_GROUP_SIZE);
+ 
+-	/*
+-	 * Test whether we have more sectors than will fit in sector_t,
+-	 * and whether the max offset is addressable by the page cache.
+-	 */
++   /* Does FS think it is one a ZBD device? */
++   if (sbi->ext4_forward_write)
++      set_opt2(sb, DISK_SMR);
++   if (sbi->ext4_ZBD_info)
++      set_opt2(sb, DISK_ZONE);
++   /*
++    * Test whether we have more sectors than will fit in sector_t,
++    * and whether the max offset is addressable by the page cache.
++    */
+ 	err = generic_check_addressable(sb->s_blocksize_bits,
+ 					ext4_blocks_count(es));
+ 	if (err) {

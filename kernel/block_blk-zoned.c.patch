@@ -1,0 +1,422 @@
+diff --git a/block/blk-zoned.c b/block/blk-zoned.c
+new file mode 100755
+index 0000000..7129782
+--- /dev/null
++++ b/block/blk-zoned.c
+@@ -0,0 +1,416 @@
++/*
++ * Functions for zone based SMR devices.
++ *
++ * Copyright (C) 2015 Seagate Technology PLC
++ *
++ * Written by:
++ * Shaun Tancheff <shaun.tancheff@seagate.com>
++ * XiaoDong Han <xiaodong.h.han@seagate.com>
++ *
++ * This file is licensed under  the terms of the GNU General Public
++ * License version 2. This program is licensed "as is" without any
++ * warranty of any kind, whether express or implied.
++ */
++
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/bio.h>
++#include <linux/blkdev.h>
++#include <linux/blk-mq.h>
++#include <linux/sched/sysctl.h>
++
++#include "blk.h"
++#include <linux/blk-zoned.h>
++
++/*
++ * for max sense size
++ */
++#include <scsi/scsi.h>
++#include <scsi/scsi_cmnd.h>
++#include <scsi/scsi_eh.h>
++#include <scsi/scsi_dbg.h>
++#include <linux/ata.h>
++
++#define ZBC_TIMEOUT		   (30 * HZ)
++#define ZBC_MAX_RETRIES		     5
++#define CMD_LEN                     16
++#define INQUIRY_CMDLEN  6
++
++/** ----------------------------------------------------------------- */
++/** ----------------------------------------------------------------- */
++/** ------------------- SMR ZONED DRIVE SUPPORT --------------------- */
++/** ----------------------------------------------------------------- */
++/** ----------------------------------------------------------------- */
++
++static inline void _len_to_cmd_zbc(u8 * cmd, u32 _len)
++{
++	u32 len = cpu_to_be32(_len);
++	memcpy(cmd, &len, sizeof(len));
++}
++
++static inline void _lba_to_cmd_zbc(u8 * cmd, u64 _lba)
++{
++	u64 lba = cpu_to_be64(_lba);
++	memcpy(cmd, &lba, sizeof(lba));
++}
++
++static inline u16 zc_get_word(u8 * buf)
++{
++	u16 w = buf[1];
++	w <<= 8;
++	w |= buf[0];
++	return w;
++}
++
++/* NOTE: this is basically scsi_execute */
++int blk_cmd_execute(struct request_queue *queue,
++			   const unsigned char *cmd,
++			   int data_direction,
++			   void *buffer,
++			   unsigned bufflen,
++			   unsigned char *sense,
++			   int timeout,
++			   int retries,
++			   u64 flags,
++			   int *resid)
++{
++        struct request *req;
++        int write = (data_direction == DMA_TO_DEVICE);
++        int ret = DRIVER_ERROR << 24;
++
++        req = blk_get_request(queue, write, __GFP_WAIT);
++        if (IS_ERR(req))
++                return ret;
++        blk_rq_set_block_pc(req);
++
++        if (bufflen &&  blk_rq_map_kern(queue, req,
++                                        buffer, bufflen, __GFP_WAIT))
++                goto out;
++
++        req->cmd_len = COMMAND_SIZE(cmd[0]);
++        memcpy(req->cmd, cmd, req->cmd_len);
++        req->sense = sense;
++        req->sense_len = 0;
++        req->retries = retries;
++        req->timeout = timeout;
++        req->cmd_flags |= flags | REQ_QUIET | REQ_PREEMPT;
++
++        /*
++         * head injection *required* here otherwise quiesce won't work
++         */
++        blk_execute_rq(req->q, NULL, req, 1);
++
++        /*
++         * Some devices (USB mass-storage in particular) may transfer
++         * garbage data together with a residue indicating that the data
++         * is invalid.  Prevent the garbage from being misinterpreted
++         * and prevent security leaks by zeroing out the excess data.
++         */
++        if (unlikely(req->resid_len > 0 && req->resid_len <= bufflen))
++                memset(buffer + (bufflen - req->resid_len), 0, req->resid_len);
++
++        if (resid)
++                *resid = req->resid_len;
++        ret = req->errors;
++ out:
++        blk_put_request(req);
++
++        return ret;
++}
++EXPORT_SYMBOL(blk_cmd_execute);
++
++int blk_cmd_with_sense(struct gendisk *disk,
++	u8 * cmd, int data_direction,
++	u8 * buf, u32 buf_len, u8 * sense_buffer)
++{
++	struct request_queue *queue = disk->queue;
++	int rc;
++	struct scsi_sense_hdr sshdr = { 0 };
++
++	if (!sense_buffer) {
++		pr_err("scsi cmd exec: sense buffer is NULL\n");
++		return -1;
++	}
++
++	rc = blk_cmd_execute(queue, cmd, data_direction, buf, buf_len,
++		sense_buffer, ZBC_TIMEOUT, ZBC_MAX_RETRIES, 0, NULL);
++
++	pr_debug("%s: %s -> 0x%08x"
++		" [h:%02x d:%02x m:%02x s:%02x]\n", __func__,
++		disk->disk_name, rc,
++			host_byte(rc),
++			driver_byte(rc),
++			msg_byte(rc),
++			status_byte(rc));
++
++	scsi_normalize_sense(sense_buffer, SCSI_SENSE_BUFFERSIZE, &sshdr);
++	if (host_byte(rc)
++	    || (    driver_byte(rc)
++		&& (driver_byte(rc) != DRIVER_SENSE) )
++	    || (    status_byte(rc)
++		&& (status_byte(rc) != CHECK_CONDITION)) ) {
++		pr_err("exec scsi cmd failed,opcode:%d\n", cmd[0]);
++		if (driver_byte(rc) & DRIVER_SENSE) {
++			pr_err("%s: %s", __func__, disk->disk_name );
++		}
++		return -1;
++	} else if (   (driver_byte(rc) == DRIVER_SENSE)
++		   && ((cmd[0] == ATA_16) || (cmd[0] == ATA_12))) {
++		if (sense_buffer[21] != 0x50) {
++			pr_err("%s: ATA pass through command failed\n",
++				__func__);
++			return -1;
++		}
++	} else if (rc) {
++		if (   (driver_byte(rc) == DRIVER_SENSE)
++		    && (status_byte(rc) == CHECK_CONDITION)
++		    && (0 != sense_buffer[0])) {
++			pr_err("%s: Something else failed\n", __func__);
++			return -1;
++		}
++	}
++
++	return 0;
++}
++EXPORT_SYMBOL(blk_cmd_with_sense);
++
++int blk_zoned_report(struct gendisk *disk,
++			u64 start_lba,
++			u8 opt,
++			u8 * buf,
++			size_t bufsz)
++{
++	int ret = 0;
++	u8 cmd[CMD_LEN] = {0};
++	u8 sense_buf[SCSI_SENSE_BUFFERSIZE] = {0};
++
++	cmd[0] = REPORT_ZONES;
++	cmd[1] = ATA_SUBCMD_REP_ZONES;
++
++	_lba_to_cmd_zbc(&cmd[2],  start_lba);
++	_len_to_cmd_zbc(&cmd[10], (u32)bufsz);
++
++	cmd[14] = opt;
++
++	pr_debug("%s: "
++		"%02x:%02x "
++		"lba:%02x%02x%02x%02x%02x%02x%02x%02x "
++		"len:%02x%02x%02x%02x %02x %02x\n",
++		__func__,
++		cmd[0],  cmd[1],
++		cmd[2],  cmd[3],  cmd[4],  cmd[5],
++		cmd[6],  cmd[7],  cmd[8],  cmd[9],
++		cmd[10], cmd[11], cmd[12], cmd[13],
++		cmd[14], cmd[15] );
++
++	ret = blk_cmd_with_sense(disk, cmd, DMA_FROM_DEVICE, buf, bufsz,
++					&sense_buf[0]);
++	return ret;
++}
++EXPORT_SYMBOL(blk_zoned_report);
++
++int blk_zoned_inquiry(struct gendisk *disk, u8 evpd, u8 pg_op,
++	u16 mx_resp_len, u8 * buf)
++{
++	int ret = 0;
++	u8 cmd[INQUIRY_CMDLEN] = {0};
++	u8 sense_buf[SCSI_SENSE_BUFFERSIZE] = {0};
++
++	__be16 slen = cpu_to_be16(mx_resp_len);
++
++	if (0xb1 != pg_op) {
++		pr_err("Page Code %02x is wrong, the correct page"
++		       " code is 0xb1\n", pg_op);
++		return -1;
++	}
++
++	cmd[0] = INQUIRY;
++	if (evpd)
++		cmd[1] |= 1;
++	cmd[2] = pg_op;
++	cmd[3] = slen & 0xff;
++	cmd[4] = (slen >> 8) & 0xff;
++
++	pr_debug("%s: cmd: "
++		"%02x:%02x:%02x:%02x:%02x:%02x\n",
++		__func__,
++		cmd[0],  cmd[1], cmd[2],  cmd[3],  cmd[4],  cmd[5]);
++
++	ret = blk_cmd_with_sense(disk, cmd, DMA_FROM_DEVICE,
++					buf, mx_resp_len, &sense_buf[0]);
++	if (ret != 0) {
++		pr_err("%s: inquiry failed\n", disk->disk_name);
++		goto out;
++	}
++
++out:
++	return ret;
++}
++EXPORT_SYMBOL(blk_zoned_inquiry);
++
++int blk_zoned_reset_wp(struct gendisk *disk, u64 start_lba)
++{
++	int ret = 0;
++	u8 cmd[CMD_LEN] = {0};
++	u8 sense_buf[SCSI_SENSE_BUFFERSIZE] = {0};
++	u8 all_bit = 0;
++
++	pr_debug("reset wp: %s, start_lba %lld\n", disk->disk_name,
++		start_lba);
++
++	if (start_lba == ~0ul) {
++		all_bit = 1;
++		start_lba = 0;
++	}
++
++	cmd[0] = RESET_WP;
++	cmd[1] = ATA_SUBCMD_RESET_WP;
++
++	_lba_to_cmd_zbc(&cmd[2], start_lba);
++
++	pr_debug("%s: "
++		"%02x:%02x "
++		"lba:%02x%02x%02x%02x%02x%02x%02x%02x "
++		"len:%02x%02x%02x%02x %02x %02x\n",
++		__func__,
++		cmd[0],  cmd[1],
++		cmd[2],  cmd[3],  cmd[4],  cmd[5],
++		cmd[6],  cmd[7],  cmd[8],  cmd[9],
++		cmd[10], cmd[11], cmd[12], cmd[13],
++		cmd[14], cmd[15] );
++
++	cmd[14] = all_bit;
++	ret = blk_cmd_with_sense(disk, cmd, DMA_FROM_DEVICE, NULL, 0,
++		&sense_buf[0]);
++	if (ret != 0) {
++		pr_err("%s: reset write pointer failed\n",
++			disk->disk_name);
++		return -1;
++	}
++	if (all_bit) {
++		pr_debug("reset all zone's write pointer success\n");
++	} else {
++		pr_debug("reset zone %llu write pointer success\n",
++			start_lba);
++	}
++
++	return ret;
++}
++EXPORT_SYMBOL(blk_zoned_reset_wp);
++
++int _inquiry_ioctl(struct gendisk *disk, void __user *parg)
++{
++	int error = 0;
++	size_t result_size = 0;
++	size_t alloc_size = PAGE_SIZE;
++	zoned_inquiry_t * inq = kmalloc(alloc_size, GFP_KERNEL);
++
++	if (!inq) {
++		error = -ENOMEM;
++		goto out;
++	}
++	if (copy_from_user(inq, parg, sizeof(*inq))) {
++		error = -EFAULT;
++		goto out;
++	}
++	result_size = inq->mx_resp_len + offsetof(zoned_inquiry_t, result);
++	if (result_size > alloc_size ) {
++		void * tmp;
++		alloc_size = result_size;
++		tmp = krealloc(inq, alloc_size, GFP_KERNEL);
++		if (!tmp) {
++			error = -ENOMEM;
++			goto out;
++		}
++		inq = tmp;
++	}
++	error = blk_zoned_inquiry(disk, inq->evpd,  inq->pg_op,
++				  inq->mx_resp_len, inq->result);
++	if (error) {
++		error = -EFAULT;
++		goto out;
++	}
++	if (copy_to_user(parg, inq, result_size)) {
++		error = -EFAULT;
++		goto out;
++	}
++
++out:
++	if (inq) {
++		kfree(inq);
++	}
++	return error;
++}
++EXPORT_SYMBOL(_inquiry_ioctl);
++
++int _reset_wp_ioctl(struct gendisk *disk, unsigned long arg)
++{
++	int error = -EFAULT;
++	error = blk_zoned_reset_wp(disk, arg);
++	return error;
++}
++EXPORT_SYMBOL(_reset_wp_ioctl);
++
++int _report_zones_ioctl(struct gendisk *disk, void __user *parg)
++{
++	int error = -EFAULT;
++	int is_vm = 0;
++	struct bdev_zone_report_ioctl_t * zone_iodata = NULL;
++	u32 alloc_size = max(PAGE_SIZE, sizeof(*zone_iodata));
++
++	zone_iodata = kmalloc(alloc_size, GFP_KERNEL);
++	if (!zone_iodata) {
++		error = -ENOMEM;
++		goto report_zones_out;
++	}
++	if (copy_from_user(zone_iodata, parg, sizeof(*zone_iodata))) {
++		error = -EFAULT;
++		goto report_zones_out;
++	}
++	if (zone_iodata->data.in.return_page_count > alloc_size) {
++		void * tmp;
++		alloc_size = zone_iodata->data.in.return_page_count;
++		if (alloc_size < KMALLOC_MAX_SIZE) {
++			tmp = krealloc(zone_iodata, alloc_size, GFP_KERNEL);
++			if (!tmp) {
++				error = -ENOMEM;
++				goto report_zones_out;
++			}
++			zone_iodata = tmp;
++		} else {
++			/* too large for kmalloc, fallback to vmalloc */
++			is_vm = 1;
++			tmp = zone_iodata;
++			zone_iodata = vzalloc(alloc_size);
++			if (zone_iodata) {
++				memcpy(zone_iodata, tmp,
++					sizeof(*zone_iodata));
++			}
++			kfree(tmp);
++			if (!zone_iodata) {
++				error = -ENOMEM;
++				goto report_zones_out;
++			}
++		}
++	}
++	error = blk_zoned_report(disk,
++			zone_iodata->data.in.zone_locator_lba,
++			zone_iodata->data.in.report_option,
++			(u8*)&zone_iodata->data.out,
++			alloc_size );
++	if (error) {
++		goto report_zones_out;
++	}
++	if (copy_to_user(parg, zone_iodata, alloc_size)) {
++		error = -EFAULT;
++	}
++report_zones_out:
++	if (zone_iodata) {
++		if (is_vm)
++			vfree(zone_iodata);
++		else
++			kfree(zone_iodata);
++	}
++	return error;
++}
++EXPORT_SYMBOL(_report_zones_ioctl);

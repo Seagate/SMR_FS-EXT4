@@ -1,0 +1,18 @@
+diff --git a/lib/ext2fs/initialize.c b/lib/ext2fs/initialize.c
+index 75fbf8e..787fffd 100644
+--- a/lib/ext2fs/initialize.c
++++ b/lib/ext2fs/initialize.c
+@@ -265,6 +265,13 @@ errcode_t ext2fs_initialize(const char *name, int flags,
+ 		return 0;
+ 	}
+ 
++	/*
++	 * Set ZBD support
++	 */
++	printf("ZBD Debug: %x,%x\n",param->s_disk_layout, super->s_disk_layout);
++	assign_field(s_disk_layout);
++	printf("ZBD Debug: %x,%x\n",param->s_disk_layout, super->s_disk_layout);
++
+ retry:
+ 	fs->group_desc_count = (dgrp_t) ext2fs_div64_ceil(
+ 		ext2fs_blocks_count(super) - super->s_first_data_block,
