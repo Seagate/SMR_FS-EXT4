@@ -1,0 +1,134 @@
+diff --git a/block/scsi_ioctl.c b/block/scsi_ioctl.c
+old mode 100644
+new mode 100755
+index e1f71c3..982a3e9
+--- a/block/scsi_ioctl.c
++++ b/block/scsi_ioctl.c
+@@ -707,6 +707,11 @@ int scsi_verify_blk_ioctl(struct block_device *bd, unsigned int cmd)
+ 	case SG_GET_RESERVED_SIZE:
+ 	case SG_SET_RESERVED_SIZE:
+ 	case SG_EMULATED_HOST:
++	case SCSI_IOCTL_INQUIRY:
++	case SCSI_IOCTL_REPORT_ZONES:
++	case SCSI_IOCTL_RESET_WP:
++	case SCSI_IOCTL_OPEN_ZONE:
++	case SCSI_IOCTL_CLOSE_ZONE:
+ 		return 0;
+ 	case CDROM_GET_CAPABILITY:
+ 		/* Keep this until we remove the printk below.  udev sends it
+diff --git a/drivers/scsi/scsi_error.c b/drivers/scsi/scsi_error.c
+index 4cdaffc..c95a4e9 100644
+--- a/drivers/scsi/scsi_error.c
++++ b/drivers/scsi/scsi_error.c
+@@ -26,6 +26,7 @@
+ #include <linux/blkdev.h>
+ #include <linux/delay.h>
+ #include <linux/jiffies.h>
++#include <asm/unaligned.h>
+ 
+ #include <scsi/scsi.h>
+ #include <scsi/scsi_cmnd.h>
+@@ -2586,3 +2587,33 @@ void scsi_build_sense_buffer(int desc, u8 *buf, u8 key, u8 asc, u8 ascq)
+ 	}
+ }
+ EXPORT_SYMBOL(scsi_build_sense_buffer);
++
++/**
++ * scsi_set_sense_information - set the information field in a
++ *		formatted sense data buffer
++ * @buf:	Where to build sense data
++ * @info:	64-bit information value to be set
++ *
++ **/
++void scsi_set_sense_information(u8 *buf, u64 info)
++{
++	if ((buf[0] & 0x7f) == 0x72) {
++		u8 *ucp, len;
++
++		len = buf[7];
++		ucp = (char *)scsi_sense_desc_find(buf, len + 8, 0);
++		if (!ucp) {
++			buf[7] = len + 0xa;
++			ucp = buf + 8 + len;
++		}
++		ucp[0] = 0;
++		ucp[1] = 0xa;
++		ucp[2] = 0x80; /* Valid bit */
++		ucp[3] = 0;
++		put_unaligned_be64(info, &ucp[4]);
++	} else if ((buf[0] & 0x7f) == 0x70) {
++		buf[0] |= 0x80;
++		put_unaligned_be64(info, &buf[3]);
++	}
++}
++EXPORT_SYMBOL(scsi_set_sense_information);
+diff --git a/drivers/scsi/scsi_lib.c b/drivers/scsi/scsi_lib.c
+index 54d7a6c..b73a289 100644
+--- a/drivers/scsi/scsi_lib.c
++++ b/drivers/scsi/scsi_lib.c
+@@ -1340,8 +1340,9 @@ scsi_prep_return(struct request_queue *q, struct request *req, int ret)
+ 	struct scsi_device *sdev = q->queuedata;
+ 
+ 	switch (ret) {
++	case BLKPREP_DONE:
+ 	case BLKPREP_KILL:
+-		req->errors = DID_NO_CONNECT << 16;
++		req->errors = (ret == BLKPREP_KILL) ? DID_NO_CONNECT << 16 : 0;
+ 		/* release the command and kill it */
+ 		if (req->special) {
+ 			struct scsi_cmnd *cmd = req->special;
+diff --git a/include/scsi/scsi.h b/include/scsi/scsi.h
+old mode 100644
+new mode 100755
+index d0a66aa..9e5536a
+--- a/include/scsi/scsi.h
++++ b/include/scsi/scsi.h
+@@ -153,6 +153,8 @@ enum scsi_timeouts {
+ #define VERIFY_16	      0x8f
+ #define SYNCHRONIZE_CACHE_16  0x91
+ #define WRITE_SAME_16	      0x93
++#define ZBC_OUT		      0x94
++#define ZBC_IN		      0x95
+ #define SERVICE_ACTION_BIDIRECTIONAL 0x9d
+ #define SERVICE_ACTION_IN_16  0x9e
+ #define SERVICE_ACTION_OUT_16 0x9f
+@@ -181,6 +183,13 @@ enum scsi_timeouts {
+ #define MO_SET_PRIORITY       0x0e
+ #define MO_SET_TIMESTAMP      0x0f
+ #define MO_MANAGEMENT_PROTOCOL_OUT 0x10
++/* values for ZBC_IN */
++#define ZI_REPORT_ZONES	      0x00
++/* values for ZBC_OUT */
++#define ZO_CLOSE_ZONE	      0x01
++#define ZO_OPEN_ZONE	      0x02
++#define ZO_FINISH_ZONE	      0x03
++#define ZO_RESET_WRITE_POINTER 0x04
+ /* values for variable length command */
+ #define XDREAD_32	      0x03
+ #define XDWRITE_32	      0x04
+@@ -585,6 +594,13 @@ static inline int scsi_is_wlun(u64 lun)
+ /* Used to obtain the PCI location of a device */
+ #define SCSI_IOCTL_GET_PCI		0x5387
+ 
++/* Used for Zone based SMR devices */
++#define SCSI_IOCTL_INQUIRY		0x10000
++#define SCSI_IOCTL_RESET_WP		0x10001
++#define SCSI_IOCTL_REPORT_ZONES		0x10002
++#define SCSI_IOCTL_OPEN_ZONE		0x10003
++#define SCSI_IOCTL_CLOSE_ZONE		0x10004
++
+ /* Pull a u32 out of a SCSI message (using BE SCSI conventions) */
+ static inline __u32 scsi_to_u32(__u8 *ptr)
+ {
+diff --git a/include/scsi/scsi_device.h b/include/scsi/scsi_device.h
+index a4c9336..dc5a04a 100644
+--- a/include/scsi/scsi_device.h
++++ b/include/scsi/scsi_device.h
+@@ -174,6 +174,7 @@ struct scsi_device {
+ 	unsigned no_dif:1;	/* T10 PI (DIF) should be disabled */
+ 	unsigned broken_fua:1;		/* Don't set FUA bit */
+ 	unsigned lun_in_cdb:1;		/* Store LUN bits in CDB[1] */
++	unsigned zoned:1;		/* ZBC drive */
+ 
+ 	atomic_t disk_events_disable_depth; /* disable depth for disk events */
+ 

@@ -61,9 +61,9 @@ index f63c3d5..8422719
  
 +
 +/*
-+ * Structures for SMR/ZBD drives.  These remove disk agnosticism! 
-+ * These are flags that *temporarily* add a code path, 
-+ * and add several conditional functions. 
++ * Structures for SMR/ZBD drives.  These remove disk agnosticism!
++ * These are flags that *temporarily* add a code path,
++ * and add several conditional functions.
 + * The code path can replace the standard path in the future.
 +*/
 +
@@ -91,3 +91,89 @@ index f63c3d5..8422719
  /*
   * This structure will be used for multiple mount protection. It will be
   * written into the block number saved in the s_mmp_block field in the
+diff --git a/fs/ext4/ioctl.c b/fs/ext4/ioctl.c
+old mode 100644
+new mode 100755
+index f58a0d1..65f5f61
+--- a/fs/ext4/ioctl.c
++++ b/fs/ext4/ioctl.c
+@@ -17,6 +17,7 @@
+ #include <asm/uaccess.h>
+ #include "ext4_jbd2.h"
+ #include "ext4.h"
++#include <linux/blk-zoned-ctrl.h>
+ 
+ #define MAX_32_NUM ((((unsigned long long) 1) << 32) - 1)
+ 
+@@ -584,7 +585,35 @@ resizefs_out:
+ 		ext4_resize_end(sb);
+ 		return err;
+ 	}
++	case EXT4_IOC_REPORT_ZONES: {
++		struct gendisk *disk = sb->s_bdev->bd_disk;
++		void __user *p = (void __user *)arg;
+ 
++		if (!(filp->f_mode & FMODE_READ) ||
++		    !(filp->f_mode & FMODE_WRITE))
++			return -EBADF;
++
++		return _report_zones_ioctl(disk, p);
++	}
++	case EXT4_IOC_RESET_WP: {
++		struct gendisk *disk = sb->s_bdev->bd_disk;
++
++		if (!(filp->f_mode & FMODE_READ) ||
++		    !(filp->f_mode & FMODE_WRITE))
++			return -EBADF;
++
++		return _reset_wp_ioctl(disk, arg);
++	}
++	case EXT4_IOC_INQUIRY: {
++		struct gendisk *disk = sb->s_bdev->bd_disk;
++		void __user *p = (void __user *)arg;
++
++		if (!(filp->f_mode & FMODE_READ) ||
++		    !(filp->f_mode & FMODE_WRITE))
++			return -EBADF;
++
++		return _inquiry_ioctl(disk, p);
++	}
+ 	case FITRIM:
+ 	{
+ 		struct request_queue *q = bdev_get_queue(sb->s_bdev);
+diff --git a/fs/ext4/super.c b/fs/ext4/super.c
+index e061e66..403d989 100644
+--- a/fs/ext4/super.c
++++ b/fs/ext4/super.c
+@@ -3527,6 +3527,10 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
+ 		sbi->s_csum_seed = ext4_chksum(sbi, ~0, es->s_uuid,
+ 					       sizeof(es->s_uuid));
+ 
++   /* Set Media options -- Possible ZBD */
++   sbi->ext4_forward_write = (es->s_disk_layout & DRIVE_SMR)?1:0;
++   sbi->ext4_ZBD_info = (es->s_disk_layout & (DRIVE_SMR_HA & DRIVE_SMR_HM))?1:0;
++
+ 	/* Set defaults before we parse the mount options */
+ 	def_mount_opts = le32_to_cpu(es->s_default_mount_opts);
+ 	set_opt(sb, INIT_INODE_TABLE);
+@@ -3850,10 +3854,15 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
+ 	if (sbi->s_blocks_per_group == clustersize << 3)
+ 		set_opt2(sb, STD_GROUP_SIZE);
+ 
+-	/*
+-	 * Test whether we have more sectors than will fit in sector_t,
+-	 * and whether the max offset is addressable by the page cache.
+-	 */
++   /* Does FS think it is one a ZBD device? */
++   if (sbi->ext4_forward_write)
++      set_opt2(sb, DISK_SMR);
++   if (sbi->ext4_ZBD_info)
++      set_opt2(sb, DISK_ZONE);
++   /*
++    * Test whether we have more sectors than will fit in sector_t,
++    * and whether the max offset is addressable by the page cache.
++    */
+ 	err = generic_check_addressable(sb->s_blocksize_bits,
+ 					ext4_blocks_count(es));
+ 	if (err) {
+

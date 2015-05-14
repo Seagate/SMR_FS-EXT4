@@ -1,175 +1,457 @@
-README for EXT4 SMRFFS
-Seagate SMR Friendly File System -EXT4
-Adrian Palmer
-adrian.palmer@seagate.com
-Seagate Technology
-March 2015
-Kernel Version 4.0rc1
+README - SMRFFS-EXT4
+Seagate
+Lead Engineer: Adrian Palmer
+June 2015
 
-What is SMRFFS?
-SMRFFS is an addition to the popular EXT4 to enable support for devices that use the ZBC or ZAC standards.  Project scope includes support for Host Aware (HA) devices, may include support for Host Managed (HM) devices, and will include ability to restrict behavior to enforce a common ZBC / ZAC command set protocol.  
+Table of Contents
 
-Standards:
-Zoned Block Commands (ZBC)
-Zoned-device ATA Commands (ZAC)
+1. About
+2. ZAC/ZBD standards
+	Commands
+	Challenges
+3. Stack Changes
+	[change, method, backers]
+	ahci
+	libata
+	libsas
+	SCSI
+	SD
+	blk_dev
+	IO Scheduler
+	mdraid
+	lvm
+	Page_Cache?
+	FS
+	/sys
+4. Userland Utilities
+	hdparm
+	sdparm
+	mke2fs
+	mount.ext4
+	resize2fs
+	tune2fs
+	dumpe2fs
+	debugfs
+	e2freefrag
+	e2image
+	e2undo
+	gparted
+	fdisk
+5. schedule
+6. Patch Notes
+7. Installation
+8. FAQ
+9. Use Cases
+10. Future Work
+11. Contact info/legal
+	
+===============================================
 
-New methods are being standardized to establish a communication protocol for zoned block devices.  ZBC covers SCSI devices, and the standard is being ratified through the T10 organization.  ATA standards will be ratified through the T13 organization under the title ZAC.  
+1. About
 
-Latest specifications can be found on www.t10.org and www.t13.org.
-As of this writing, ZBC has completed letter ballot. Approval is expected in early 2015.  
-
-A draft of ZAC that includes the capabilities of ZBC is currently under development. ZAC approval should follow ZBC approval within three to four months.
-
-ZAC and ZBC command sets cover both Host Aware (HA) and Host Managed (HM) devices.  SMR drives are expected to saturate the HDD market over the coming years.  Without this modification (ZBC command support), HM will NOT work with traditional filesystems.  With this modification, HA will demonstrate performance and determinism -- as found in non-SMR drives -- in traditional & new applications.
+SMRFFS is an addition to the popular EXT4 to enable support for devices that use the ZBC or ZAC standards. Project scope includes support for Host Aware (HA) devices, may include support for Host Managed (HM) devices, and will include ability to restrict behavior to enforce a common ZBC / ZAC command set protocol. 
 
 SMR drives have a specific idiosyncrasy: (a) drive managed drives prefer non-interrupted sequential writes through a zone, (b) host aware drives prefer forward writes within a zone, and (c) host managed drives require forward writes within a zone (along with other constraints). By optimizing sequential file layout -- in-order writes and garbage collection (idle-time defragmentation and compaction) -- the file system should work with the drive to reduce non-preferred or disallowed behavior, greatly decreasing latency for applications.
 
+2. ZAC/ZBC standards
 
-HDD Availability
+Standards:
+	Zoned Block Commands (ZBC)
+	Zoned-device ATA Commands (ZAC) 
 
-Seagate manufactures and supports SMR Drive Managed (DM) and SMR Host Aware (HA) drives.  Seagate does not currently manufacture SMR Host Managed (HM) drives.
+	ZAC/ZBC standards arose in T10/T13 in response to SMR drives being developed to enter the market. New methods are being standardized to establish a communication protocol for zoned block devices. ZBC covers SCSI devices, and the standard is being ratified through the T10 organization. ATA standards will be ratified through the T13 organization under the title ZAC. 
 
-Seagate has 2 drives shipping that are SMR-DM.  Seagate's new 8TB Archive HDD v2 drive is SMR-HA.
+	Latest specifications can be found on www.t10.org and www.t13.org.
 
+	ZAC and ZBC command sets cover both Host Aware (HA) and Host Managed (HM) devices. SMR drives are expected to saturate the HDD market over the coming years. Without this modification (ZBC command support), HM will NOT work with traditional filesystems. With this modification, HA will demonstrate performance and determinism -- as found in non-SMR drives -- in traditional & new applications.
 
-What changes are needed for SMRFFS?
+	ZAC and ZBC specifications are device agnostic. The specifications were developed for SMR HDDs, but can be applied to conventional drives, Flash & SSDs, and even [possibly] optical media.
 
-There are significant changes needed to enable EXT4 to work with SMR ZBC/ZAC drives.  However, a major goal is to keep the EXT4 name and be backwards compatible with existing installations.
+Commands
 
-Kernel:
-The kernel will need to add the additional commands that are enabled with the ZBC specification.  These will be added to the drivers (AHCI, SCSI) and the associated libraries (libata, libsas).
+	REPORT_ZONES
 	
-The kernel will be explored as to the need to be modified at the I/O scheduler.  Existing elevators do not guarantee that requests will be delivered to the drive in the correct order, but only guarantee that each drive has a time slot, and services requests that are in its queue.  An elevator that considers not only time, but also completeness of a write will have to be considered.
-
-We are exploring the use of the device mapper for a scratchpad in the case of zone rewrites and metadata updates.  We're beginning to plan exploration of the updates required to md for RAID devices.  We're also looking at blockdev updates: Among our goals is to allow not only the FS, but other kernel processes to access the ZBD data.  Userland processes will also need to get ZBD information.
+	The REPORT_ZONES command is the primary method for gaining information about the zones on a disk. In order to make any meaningful decisions about the IO, the data must be gathered. The information returned is as such.
 	
-The page cache will have be explored to filter the pages sent to the I/O scheduler (for the disk) are as complete and as ordered as possible.  This cannot be based solely on age or cache space. SCSI and Blockdev layers will also have to have outstanding bugs fixed.
+	Zone type: Conventional, Sequential Write Required, Sequential Write Preferred
+	Zone condition: Not Write Pointer, Empty, Open, Read Only, Full, Offline
+	Non_seq: a bit that indicates that an out-of-order IO request has been received for the zone.
+	Zone length: Length of zone in LBAs
+	Zone start LBA
+	Write Pointer LBA
 
-EXT4:
-EXT4 will have several additional requirements and changes:
-
-The partition and FS will be zone aligned at creation. 
-(fdisk)
-The FS will have BGs that match the zone alignment and size at creation. 
-(flex_bg + some from bigalloc)
-The FS GD databitmap will be replaced (translated with) the WP offset.
-FS Metadata will be packed into zone/BG 0 & 1. (packed_meta_blocks)
-FS journal *may* have metadata and will be appending.  
-Can be a circular buffer of zones.
-
-FS will have a *strict* forward looking allocator scheme. 
-(allocator)
-FS will have a sense condition that triggers defragmentation 
-(current Databitmap vs Inodebitmap comparison check).
-FS will have access to a scratchpad zone for defragmentation
-(either as a *temporary* zone remap, or as a cache in the DM) 
-FS will have a discard that issues RESET_WRITE_POINTER
-
-FS metadata will be updated to store zone information.
-sb will identify FS as ZBD aware
- 	BG will be size of zone
- 	GD will have condition/type of zone
- 	databitmap will have WP
-
-Many of these updates of SMRFFS align with Ted T'so's vision for SMR: (https://docs.google.com/spreadsheets/d/1QdUYZT1gjfHPviMUxdVic85Z52Z4BT8ogH8rW1Y9dzw/edit#gid=1)
-
-Core-01: Per standards and implemented in v0.3
-Core-02: Implemented in FS, BlockDev, and SD layers
-Core-03: Implemented in FS, and in BlockDev
-Core-04: Unneeded/limited use.  ZBD devices will work with SMR and other media. Information embedded in SMRFFS
-Core-05: This is meant for legacy FSs on SMR, not for SMRFFS
-Core-06: This is v0.3
-EXT4-01: SMRFFS has this slated for v0.5
-EXT4-02: Possible solution for meta-data in SMRFFS
-EXT4-03: A core requirement of SMRFFS
-
+	Because the REPORT_ZONES command is a non-queued command, issuing a REPORT_ZONES command to the drive will cause all commands in the drive's work queue to be flushed. This will create a significant performance problem in Filesystems and Applications that continually request this information. It is expected that allocation software maintain a mirror cache of this information.
 	
-dev v0.1 - Completed and tested in all variations	
-	8k clusters, for 256MiB block groups
-	Mandate Copy-on-Write
-	Disable Extents
-	Sparse superblock
-	flex_bg
-	bigalloc
-	packed_meta_data
-	(Temporary) disable journaling
+	RESET_WRITE_POINTER
 
-We settled on -E packed_meta_data,num_backup_sb=0 -O sparse_super2 as our base moving forward.  However, Bigalloc deserves a second look because of active developement by the EXT4 developers.
+	The RESET_WRITE_POINTER command is a successor to the TRIM command for ZAC/ZBC devices. Unlike TRIM, RESET_WRITE_POINTER is responsible for clearing a zone. The forward-only Write Pointer is reset to the beginning of the zone, allowing data to be overwritten without consequence. Like TRIM, this is implemented as DISCARD within the kernel.
 
-This configuration increases disk seeks by consolidating the meta at the OD of the disk, but it works better for SMR idiosyncrasies.  
+	OPEN_ZONE
+	CLOSE_ZONE
+	FINISH_ZONE
 
-dev v0.2	
-	Reorder requests to be forward-write only --completed
-	Restrict Inode maps and bitmaps to zones 1 & 2
-	Restrict Journaling to zones 3 & 4
-	Implement scratchpad for metadata --pushed to v5
-	Restrict R/W accross zone/blockgroup boundaries
-	Add SMR bit flag --completed
+	These 3 commands are optional, and they manage zone conditions. OPEN_ZONE and CLOSE_ZONE toggle the Zone Condition between EXPLICIT_OPEN and CLOSED. Without the use of this command, the Zone Condition is IMPLICIT_OPEN upon a write to the zone.
 
-dev v0.3
-	update low level driver - AHCI --completed
-	update ATA - new commands --completed 2/5
-	update SCSI mid layer - new commands --completed 2/5
-	update SD ioctls - new commands, zone cache --preliminarily completed
-	add zone friendly IO scheduler elevator --pushed to v4.5
-	update Device Mapper - zone rewrite scratchpad --pushed to v5
-	Improve Page Cache order handling --pushed to v4.5
-	updates to sd --functional
+	There are advisory numbers on the drive, presented through the VPD pages, which limit the number of zones that can be open with EXPLICIT_OPEN and IMPLICIT_OPEN. Once the number of zones with either of these states exceed this number, the device will have to close zones. This is done implicitly for zones with condition IMPLICIT_OPEN and requires intervention with EXPLICIT_OPEN.
+
+	The advisory numbers are drive dependent.
 	
-dev v0.4
-	Read drive logs and use HA information --implemented in userland
-	Repurposing of the data bitmap to align with a new writepointer --completed
-	Implement ResetZonePointer from Discard model --pushed to v5
+Challenges
+	ZAC/ZBC paradigms attempt to provide an interface to solve a fundamental problem: SMR is forward-write only. This change violates a long-held notion of storage design: random writes for random access devices. Random write is now separated from random read. Because each level in the storage stack operates on a shared, generally stateless interface, each level is responsible for fulfilling the requirements for ZAC/ZBC. As each layer has [little] knowledge of the other layers, each is responsible for FIFO correctness, preventing race conditions and re-ordering of IO.
 
-dev v0.5
-	Implement Journaling improvements (circular buffer)
-		Based off Ted T'so's previous proposals.
-	Implement Garbage collection, cleanup and colocation mechanics
+	ZAC/ZBD also presents more information that has to be passed up the stack. Currently, there are no pathways and no consumers of this data. However, for optimal performance, the information must be consumed.
+
+	Besides the idiosyncrasies of SMR that are solved with ZAC/ZBC, the solution brings its own idiosyncrasies. The RESET_WRITE_POINTER has a security idiosyncrasy: because reads ahead of the write_pointer return a predetermined pattern (all zeros), a RESET_WRITE_POINTER will render all data in the zone effectively deleted. On HM drives, this results in an irreversible deletion -- HM requires sequential writes to advance the write pointer. The REPORT_ZONES command requires that drive activity be finalized to accurately report the location. This results in a disk flush operation. 
+
+
+3. Stack Changes
+
+	For every pathway through the stack, the ZAC/ZBD zone information must be examined and replicated upwards. Furthermore, action commands must be able to find there way down the stack to the driver, and ultimately the drive.
+
+	It is expected that over time, the ZAC/ZBD pathways will overtake and replace existing pathways. The ZAC/ZBD standards are compatible with conventional drives (although some of the information will have to synthesized along the way). Existing acceptance theories require that changes be both minimal and unintrusive. However, the required changes are anything but. Therefore, there will have to be a phase-in approach where conventional and ZAC/ZBD paths are parallel and mostly separate.
+
+	AHCI
+	AHCI is the software equivalent of SATA firmware. AHCI is responsible for exposing the advanced features of the SATA interface. Although AHCI presents a passthrough mode, the addition of ZAC/ZBD commands enables faster, more stable execution and caching of zone information.
+
+	Work on AHCI was completed by Seagate Technologies in late 2014.
+
+	libata
+	libata is the library that hosts the commands for ATA communication. ZAC/ZBD commands were added to this library. This includes sense date for ACS-4
+. This layer is also responsible for processing translations between SCSI and ATA.
+
+	Work on libata was completed by Seagate Technologies in early 2015. Work is based off previous improvements by SUSE. 
 	
-dev v0.7
-	Review and implement strictness criteria for HM
-	
+	libsas
+	libsas is the SCSI equivalent to libata. ZAC/ZBD commands need to be added.
 
-Dev v0.3 is being actively updated across various companies.  Collaboration and merging is needed.  Seagate is cooperating with Hauwei for the SD driver.  Dr. Hannes Reinecke of SUSE is actively developing the IO stack for SMR, and HGST has released patches for libzbc and SMR-HM on SAS drives.  We expect many, many more entities to sign on with SMRFFS, as there are many business cases out there.  
+	Work is not yet scheduled for libsas.
 
-Changes presented here were introduced and debated at LSF/MM and Vault Storage conference.  The approach received some criticism, but was generally accepted a needed change.  The conversations continue, and we encourage all to collaborate.  
+	SCSI
+	SCSI provides the commands in a non-transferable format to the upper layers. When a command is received here (with its arguments), it is translated and sent to the lower libraries. ZAC/ZBD commands are added to the SCSI layer. Also, as re-ordering can happen at this layer (in alignment with NCQ), a re-queueing algorithm has been added to reorder the reorders. The queue simply re-queues improper IO requests (IOW not at the write pointer) at the end of the queue. This is a circular list that is iterated for the correct IO.
+
+	Work on SCSI is championed by SUSE. This work was integrated into the stack by Seagate.
+
+	SD
+	SD (SCSI DEVICE) is the driver for the drive. It provides read, write and ioctl interfaces to higher layers. for ZAC/ZBD, 2 new interfacesi were added: 1 for reset_wp and another for report_zones. Because the SD driver sees every write, no matter the source, the SD driver now stores the zone information in a memory cache to avoid performance penalties related to issuing a REPORT_ZONES command to the drive's firmware.
+
+	Blockdev
+	The blockdev system receives ioctl commands then issues them on behalf of the caller to the device. This usually provides a cleaner interface, or hides multiple commands. ZAC/ZBD commands have been added.
+
+	Work on blockdev has been extensive, started by SUSE, and incorporated by Seagate.
 
 
-Utilities:
+	IO scheduler
+	The IO scheduler elevator is responsible for deciding the order of writes to the disk. Existing elevators seek to rearrange IO with either nothing (noop elevator), or a combination of LBA seeks, priority, process-based scheduling, and time deadline. A new scheduler needs to be added to account for LBA sequentiality.
+
+	Work on the IO scheduler is yet to be scheduled.
+
+	md/mdraid
+	md will have 2 purposes: the first is to provide shims that interface between disk and apps; the second is to enable ZAC/ZBC-aware RAID.
+
+	There are 3 types of shims: one that provides conventional <--> HA/HM, one that provides a HA/HM <--> conventional interface, and another that provides a HA/HM<-->HA/HM interface. The first is a simulator for HA/HM running on a conventional drive. Of the remaining, the former blocks ZAC/ZBC from rising to upper layers, and the latter passes the information.
+
+
+	The conventional <--> HA/HM shim is the early phase of ZAC/ZBC adoption. It is a simulator, and has little expected value beyond that. The path that this shim represents is expected to be absorbed into the SD driver, allowing conventional disks to be presented as HA/HM. 
+
+	Work on this shim has been started, but the project has been shelved because of advancement of the other kernel work, by Seagate.
+
+	The HA/HM <--> conventional shim provides an HA/HM drive to be used with legacy/non-compliant applications (Filesystems). As it presents the drive as a conventional drive to everything above it, it eliminates the need for further massive changes. This is a lasting stopgap measure until ZAC/ZBC is fully integrated into the stack and matured. This is also a solution for legacy filesystems that can't yet be obsoleted (eg Fat32 for EFI partitions) This shim works by transforming the filesystem into Copy-on-Write at the block device. As such, what the Filesystem believes are the allocations is completely different than what the drive sees as allocations. The shim maintains metadata that is the LBA mapping table. During idle times, the shim can clean up the mappings (defragment) to improve read performance.
+
+	This shim seeks to allow all layers above it to work. RAID/LVM/FS will work as is.
+
+	Work on this shim has been significantly advanced by Seagate, but is not included as part of the SMRFFS project.
+
+	The HA/HM <--> HA/HM shim provides ZAC/ZBC information up the stack. Because most of the functionality of this md shim is mirror and already implemented in SD, there is little to do, except in combination with LVM/RAID. There is one reason this is needed: With multiple disks (or even 1 drive), zone information is not guaranteed to be identical. This shim, along with mdraid, will need to mangle (read: change) the reported zone information in particular way.
+
+	This shim may not be strictly necessary, as the functionality of it can be fully absorbed into the consuming layers.
+
+	Work on this shim, and the associated layers, is expected to begin in August 2015
+
+	LVM
+	Logical Volume Manager (LVM) is software that combines disks linearly, allowing the drives to appear to change size. The drives are buttressed against each other. This results in a JBOD (Just a Bunch Of Disks) array. There is no guarantee that drives underneath are identical, and in general, LVM doesn't care. However, to be presented as a single volume, the aggregation must be seamless. For ZAC/ZBD, this includes offsetting LBAs (as is current), but also to align different zone information (IOW the SAME field in the REPORT_ZONES cannot be set for the information passed up, although it may be set for each individual drive). The LVM could have a mix of zones that are different types and different sizes.
+
+	Work on LVM is scheduled to begin in August 2015.
+
+	mdraid
+	mdraid will require extensive changes. The drives will be arranged in a way that will require a combination of 1) overlapping zones 2) striping zones and 3) parity.
+
+	More to come on this later. Work is scheduled to begin in August 2015.
+
+	Page Cache
+
+	We currently expect there is nothing to do for ZAC/ZBC in the page cache, except for the possibility of adding ordered stability to the pages as they enter the cache, go through the cache, and exit the cache.
+
+	Filesystem (EXT4)
+
+	Aside from possibly mdraid, the FS is the lowest application that chooses allocation. Everything below the FS seeks to honor the FS choice, and everything above cares little. The FS is most sensitive to ZAC/ZBD changes. Without the needed changes, existing FSes will either 1) simply fail or 2) have performance degradation. The FS now has a need to know about the logical/physical layout of the disk. FSes of yesteryear sought to optimize based on CHS information from the firmware. However, after FS creation and layout, that information was never queried again, and the FS is essentially drive agnostic. SMRFFS seeks to continue in the same tradition.
+
+	Upon creation, the FS is created in a way that mimics the underlying device. Block Groups are laid out to match the zone alignments. Once created, the metadata in the FS mirrors the information in REPORT_ZONES at any given time (this removes massive performance penalties). The allocator is changed such that the writes are no longer random, but rather follow forward-write only rules. Upon mount, because of the criticalness of following forward-write only, the allocation bitmaps are scanned and checked for accuracy against the REPORT_ZONES information. This one rule requires multiple algorithm additions and enhancements inside the FS. While this initially introduces 2 control paths in the FS (one for conventional drives, and another for ZAC/ZBC), we expect that the ZAC/ZBC path will absorb all use cases from the conventional path. ZAC/ZBC will work on a conventional drive (although some information -- zone start and length -- need to be synthesized in SD).
+
+	Work on the FS (EXT4) is currently under development by Seagate.
+
+	sysfs
+	Up to this point, all work has been committed to the kernelspace. There are utilities that work in userspace that will need the ZAC/ZBC information also. Many of these utilities take the place of the FS for a specific purpose. ZAC/ZBC zone information will need to be presented (and maintained) in sysfs from SD.
+
+4. Userland Utilities
 
 mke2fs
-	add -E ZBD flag --completed
+	Worked on by Seagate
+	1. Add ZBD flag
+		Requires packed_meta_data
+		Requires extents*
+		Requires bigalloc
+	2. Query Zone information from disk
+		lay out BGs accordingly
+		handle multi-size BGs
+	3. SB/GD changes
+	4. New Extent layout
+	
+	*incompatible with EXT2/3/4 indirect lists
+
+hdparm
+	Finished: Reworked by Seagate
+	1. Query and report Drive type
+	2. Query and Report Zone Information
+	
+sdparm
+	1. Query and report Drive type
+	2. Query and Report Zone Information
+	
+gdisk (not fdisk)
+	1. New Defaults?
+	2. add ZBD flag
+	3. Query disk and suggest optimizations
+	4. handle zones with GPT (Not MBR with fdisk)
+	
+gparted (not parted)
+	1. New Defaults?
+	2. add ZBD flag
+	3. Query disk and suggest optimizations
+	4. handle zones with GPT (Not MBR with parted)
+	
+EXT4 Library (e2fsprogs)
+	1. Add ZBD structures
+	2. Update SB/GD structures
+	3. Add write-engine for write-in-place utilities
+	4. Add new journal support for write-in-place utilities
+	5. Add new allocator routine (same as in FS)
+
+e2freefrag
+	No major changes
+	1. Add reporting recommendation to compact
+	
 dumpe2fs
+	1. Add reporting information for ZBD SB & GDs
+	
+e2undo
+	Obsolete. Will REQUIRE journal on ZBD, which makes this redundant.
+	
+e2image
+	1. Will need to write SB using write engine.
+	
+e2defrag	
+	Needs to be gutted and rewritten
+	uses write-engine
+	uses allocator
+	1. Add defragmenter compatible with ZBD
+	2. Add compactor option(s)
+		Compact within zones (zone pack)
+		Compact zones (disk pack) (range)
+	3. Add new journal support (metadata)
+	
 tune2fs
-fdisk
-etc...
-
+	use write-engine
+	1. Multisize BG support
+	2. Add options for new fields in SB & GDs
+	3. If needed, move/resize BGs, edit inodes (journal)
+	4. Re-write SB & GDs
 	
+resize2fs
+	use write-engine
+	Will not modify partitions
+	1. Add ZBD flag
+	2. Add support for multi-size BGs support
+	3. Will need to re-write SB
 	
-When are these changes expected to be available?
-
-Seagate wishes to be cooperative and open on this project.  Seagate is operating under GPLv2 on this project.  Interim releases will be available on a general schedule, but updates/bug fixes will be as needed.  Testing will be performed by Seagate, but vetting will happen within the community.
-
-Expected delivery dates:
-	*Dev v0.1 - Undergoing internal testing.
-	*Dev v0.2,0.3 - February 2015
-	*Dev v0.4 - March 2015
-			Discussed at LSF/MM
-			Presented at Vault Storage Conference
-			alpha code posted -- Kernel version 4.0rc1
-	Dev v0.5 - June 2015
-			Presented at MSST 2015
-	Dev v0.7 - As time permits
+tune2fs
+	use write-engine
+	1. modify SB for ZBD options
+	2. Support for multi-size BGs
+	3. modify GD for size/condition/type
 	
+debugfs
+	use write-engine, and all functions in library
+	
+e4fschk
+	use write-engine
+	1. Add support for new options in SB & GD
+	2. Add new inode handling
+	3. Add new journal support
+
+mdadm
+	possibly extensive rewrite
+	1. add ZBD support
+	
+
+5. Schedule
+
+	Internally, we have organized the project into 'releases' ranging from v0.1 to v0.8
+
+	v0.1 Superficial changes with existing code (assume 256MiB zones)
+		mkfs options -b 4096 -C 8192 -E bigalloc,packed_meta_blocks=1,discard,num_backup_sb=0 -O extent,sparse_super2,^has_journal
+		Simulation of 8k blocks
+		No journal
+
+	v0.2 Minor FS changes
+		Add ZAC/ZBC bit flag in SB
+		Add internal structures to support ZAC/ZBC
+		Forward write only verification/tweaking
+
+	v0.3 Kernel IO stack changes
+		Update AHCI, libata, SCSI, SD
+
+	v0.4 Kernel IO stack communication
+		ioctls from SD to FS
+
+	v0.45 Improved updates to v0.4
+
+	v0.5 Major FS changes
+		New block allocator - forward-write only at Write Pointer
+		New journal
+		B+trees for metadata
+		New extents
+		New Garbage Collector/Defragmenter/Compactor
+		groundwork for multi-sized BGs
+
+	v0.6 Userland utilities
+		resize2fs
+		tune2fs
+		dumpe2fs
+		debugfs
+		e2freefrag
+		e2image
+		e2defrag
+		e4fschk
+		e2undo
+		mke2fs
+		hdparm
+		sdparm
+		gdisk
+		gparted
+		mdadm
+		others?
+
+	v0.7 RAID support
+		DM shim: HA/HM <--> conventional
+		DM shim: HA/HM <--> HA/HM
+		multi-sized BGs
+		LVM
+		mdraid
+
+	v0.8 Performance/Standards compliance
+		Add/verify/enforce HM requirements
+
+	Completed
+		v0.1
+			Developed, tested, released (tweaks still ongoing)
+		v0.2
+			Developed, tested, released
+		v0.3
+			Developed, tested, released
+		v0.4
+			Developed, tested, released, presented at Vault Storage Conference
+		v0.45
+			Incorporated code, released
+
+	In Progress
+		v0.5 - expected August 2015
+
+	To Be Done
+		v0.6 - expected August 2015
+		v0.7 - expected December 2015
+		v0.8 - expected January 2016
+
+6. Patch Notes
+
+	ATA_IDE
+	
+	Providing a base for future work, this patch updates files with code needed to provide ZAC support at the ATA layers. These changes allow the basic communication with SATA ZAC/ZBD drives. 	These patches add the new ZAC/ZBD commands to the libraries, detecting them as such and to what degree they require maintenance (NONE, Drive Managed --if reported, Host Aware, Host Managed)
+	Changes include:
+		New ZAC/ZBC commands
+		Changes in taskfile to accommodate commands
+		Errors for ZAC/ZBC commands
+		Traces for ZAC/ZBC commands
+		Translations for ZAC.ZBC commands
+		Detection of drive type
+		
+
+	SCSI_SAS
+
+	As the Linux stack assumes SCSI internally, commands for ZAC/ZBC (developed on SATA drives) must be implemented. These changes reside on top of ATA_IDE changes. The extent of this patch receives commands by code number, simply to pass them along to lower levels. Beyond codes being defined, there is no implementation of SCSI commands.
+	
+	SD
+
+	The driver for the devices. ZAC/ZBD procedures have been added. Upon detection of devices, the SD driver is responsible for issuing and storing the command results. 
+	Without the lower layer patches, changes here would not take effect.
+	Changes require the setting of CONFIG_SCSI_ZBC
+
+	BLOCKDEV
+
+	This patch adds functionality for the management of ZAC/ZBC zones and exposes symbols upward. Compilation requires CONFIG_BLK_DEV_ZONED and CONFIG_BLK_ZAONED
+
+	EXT4
+
+	The EXT4 patch begins to defines the needed structures for ZAC/ZBC use. The goal is to manage the zone on the SMR drive via the management of the BGs. 
+
+7. Installation
+
+	Under kernel 4.0-rc1 (or for another, some conflicts may need to be resolved), apply each patch with git apply.
+
+	Compile and install the kernel as per normal procedures.
+
+
+8. FAQs
+
+	What's the difference between SMR solutions?
+		There are 4 formats: No format, Drive Managed (DM), Host Aware (HA) and Host Managed (HM)
+
+		No format is conceptual SMR: forward write only. (Period). Think of it like tape.
+
+		DM: The drive is presented to the OS as a conventional drive. The drive hides all implementation of the forward-write only work and allows random writes by the OS. Under certain workloads, this has performance problems. Current software will work on these drives.
+
+		HM: The drive is present to the OS a new device type. The drive requires the OS to make proper IO choices and follow the rules. Anything not conforming to the rules is returned as an error. By following the rules, high performance is expected. All currently existing software (filesystems) will break on HM.
+
+		HA: The drive uses and expects HM rules, but offers flexibility instead of an error when non-conformant writes are received. Current software will work, but not optimally on these drives.
+
+
+	What's the difference between ZAC and ZBC?
+		Zoned Block Commands (ZBC)
+ 		Zoned-device ATA Commands (ZAC) 
+
+		Both standards have the same commands and return types, for the same purpose. ZAC is ATA and ZBC is SCSI.
+
+9. Use Cases
+
+	SMR ZAC/ZBC drives are currently slated for an archive market, with future work required for other use cases.
+
+	a) backup systems:
+		This case is Write Once, Read Many (if ever) -- WORM. Data is written strictly sequentially, either using no filesystem or a log-structured FS. Data can be written through to the end of the disk.
+
+10. Future Work
+
+		
+
+11. Legal
+
 Releases will be available at http://www.github.com/seagate/SMR_FS-EXT4
 
 How is Seagate cooperative in this project?
 
-Under the GPLv2 license, Seagate is willing to share code with partners who will contribute to Seagate's efforts as Seagate contributes to the community.  Seagate is actively seeking help, from corporations or individuals.  Please contact the author to provide assistance.
+Under the GPLv2 license, Seagate is willing to share code with partners who will contribute to Seagate's efforts as Seagate contributes to the community. Seagate is actively seeking help, from corporations or individuals. Please contact the author to provide assistance.
 
-Seagate seeks no revenue directly from this filesystem. It is given as a gift to the community.   
+Seagate seeks no revenue directly from this filesystem. It is given as a gift to the community. 
 
 Seagate's modifications to EXT4 are distributed under the GPLv2 license "as is," without technical support, and WITHOUT ANY WARRANTY, without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 
-You should receive a copy of the GNU Lesser General Public License along with any updates/patches.  If not, see <http://www.gnu.org/licenses/>.
+You should receive a copy of the GNU Lesser General Public License along with any updates/patches. If not, see <http://www.gnu.org/licenses/>.
 
