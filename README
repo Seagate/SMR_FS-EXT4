@@ -1,7 +1,7 @@
 README - SMRFFS-EXT4
 Seagate
 Lead Engineer: Adrian Palmer
-June 2015
+September 2015
 
 Table of Contents
 
@@ -20,7 +20,6 @@ Table of Contents
 	IO Scheduler
 	mdraid
 	lvm
-	Page_Cache?
 	FS
 	/sys
 4. Userland Utilities
@@ -36,14 +35,15 @@ Table of Contents
 	e2image
 	e2undo
 	gparted
-	fdisk
+	gdisk
 5. schedule
 6. Patch Notes
 7. Installation
 8. FAQ
 9. Use Cases
 10. Future Work
-11. Contact info/legal
+11. Feedback
+12. Contact info/legal
 	
 ===============================================
 
@@ -170,7 +170,7 @@ Challenges
 	LVM
 	Logical Volume Manager (LVM) is software that combines disks linearly, allowing the drives to appear to change size. The drives are buttressed against each other. This results in a JBOD (Just a Bunch Of Disks) array. There is no guarantee that drives underneath are identical, and in general, LVM doesn't care. However, to be presented as a single volume, the aggregation must be seamless. For ZAC/ZBD, this includes offsetting LBAs (as is current), but also to align different zone information (IOW the SAME field in the REPORT_ZONES cannot be set for the information passed up, although it may be set for each individual drive). The LVM could have a mix of zones that are different types and different sizes.
 
-	Work on LVM is scheduled to begin in August 2015.
+	Work on LVM is scheduled to begin in October 2015.
 
 	mdraid
 	mdraid will require extensive changes. The drives will be arranged in a way that will require a combination of 1) overlapping zones 2) striping zones and 3) parity.
@@ -364,12 +364,19 @@ mdadm
 			Incorporated code, released
 
 	In Progress
-		v0.5 - expected August 2015
+		v0.5 - expected November 2015
 
 	To Be Done
-		v0.6 - expected August 2015
+		v0.6 - expected November 2015
 		v0.7 - expected December 2015
 		v0.8 - expected January 2016
+
+	Presentatons/Speaking Engagements
+		Linux Storage and FileSystems/Memory Management Summit 2015
+		Linux Vault Conference 2015
+		Massive Storage Systems and Technology 2015
+		Linux Plumber's Conference 2015
+		SNIA Developer's Conference 2015
 
 6. Patch Notes
 
@@ -405,7 +412,8 @@ mdadm
 
 7. Installation
 
-	Under kernel 4.0-rc1 (or for another, some conflicts may need to be resolved), apply each patch with git apply.
+	Under kernel 4.2.0 (or for another, some conflicts may need to be resolved), apply each patch with git apply.
+	Or compile the provided kernel for already included patches.
 
 	Compile and install the kernel as per normal procedures.
 
@@ -439,9 +447,15 @@ mdadm
 
 10. Future Work
 
-		
+11. Feedback
 
-11. Legal
+	Skepticism
+
+	This is a large project with major changes throughout the IO stack, and is expected to have to have groundbreaking acceptance when SMR drives saturate the market.  Until then, there is skepticism in the community.  This is expected for such a change.  We take this feedback from the open source community, as well as research from proprietary vendors, and the direction of other FS projects to come to the conclusion that this is a needed and beneficial project for the next generation of storage technology.
+
+
+
+12. Legal
 
 Releases will be available at http://www.github.com/seagate/SMR_FS-EXT4
 
