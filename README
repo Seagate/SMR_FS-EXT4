@@ -1,7 +1,7 @@
 README - SMRFFS-EXT4
-Seagate
+Seagate Technologies LLC
 Lead Engineer: Adrian Palmer
-September 2015
+November 2015
 
 Table of Contents
 
@@ -36,7 +36,7 @@ Table of Contents
 	e2undo
 	gparted
 	gdisk
-5. schedule
+5. Schedule
 6. Patch Notes
 7. Installation
 8. FAQ
@@ -66,6 +66,8 @@ Standards:
 	ZAC and ZBC command sets cover both Host Aware (HA) and Host Managed (HM) devices. SMR drives are expected to saturate the HDD market over the coming years. Without this modification (ZBC command support), HM will NOT work with traditional filesystems. With this modification, HA will demonstrate performance and determinism -- as found in non-SMR drives -- in traditional & new applications.
 
 	ZAC and ZBC specifications are device agnostic. The specifications were developed for SMR HDDs, but can be applied to conventional drives, Flash & SSDs, and even [possibly] optical media.
+
+	ZBC was sent to INCITS on 4Sept2015 (INCITS 536).  ZAC is expected to be sent to INCITS in December 2015.  Additional features are being planned for later drafts.
 
 Commands
 
@@ -101,7 +103,7 @@ Challenges
 
 	ZAC/ZBD also presents more information that has to be passed up the stack. Currently, there are no pathways and no consumers of this data. However, for optimal performance, the information must be consumed.
 
-	Besides the idiosyncrasies of SMR that are solved with ZAC/ZBC, the solution brings its own idiosyncrasies. The RESET_WRITE_POINTER has a security idiosyncrasy: because reads ahead of the write_pointer return a predetermined pattern (all zeros), a RESET_WRITE_POINTER will render all data in the zone effectively deleted. On HM drives, this results in an irreversible deletion -- HM requires sequential writes to advance the write pointer. The REPORT_ZONES command requires that drive activity be finalized to accurately report the location. This results in a disk flush operation. 
+	Besides the idiosyncrasies of SMR that are solved with ZAC/ZBC, the solution brings its own idiosyncrasies. The RESET_WRITE_POINTER has a security idiosyncrasy: because reads ahead of the write_pointer return a predetermined pattern (eg. all zeros), a RESET_WRITE_POINTER will render all data in the zone effectively deleted. On HM drives, this results in an irreversible deletion -- HM requires sequential writes to advance the write pointer. The REPORT_ZONES command requires that drive activity be finalized to accurately report the location. This results in a disk flush operation. 
 
 
 3. Stack Changes
@@ -129,7 +131,7 @@ Challenges
 	SCSI
 	SCSI provides the commands in a non-transferable format to the upper layers. When a command is received here (with its arguments), it is translated and sent to the lower libraries. ZAC/ZBD commands are added to the SCSI layer. Also, as re-ordering can happen at this layer (in alignment with NCQ), a re-queueing algorithm has been added to reorder the reorders. The queue simply re-queues improper IO requests (IOW not at the write pointer) at the end of the queue. This is a circular list that is iterated for the correct IO.
 
-	Work on SCSI is championed by SUSE. This work was integrated into the stack by Seagate.
+	Work on SCSI is championed by SUSE. This work was integrated into the stack by Seagate.  Additional work is being to ensure both HA and HM have included pathways.
 
 	SD
 	SD (SCSI DEVICE) is the driver for the drive. It provides read, write and ioctl interfaces to higher layers. for ZAC/ZBD, 2 new interfacesi were added: 1 for reset_wp and another for report_zones. Because the SD driver sees every write, no matter the source, the SD driver now stores the zone information in a memory cache to avoid performance penalties related to issuing a REPORT_ZONES command to the drive's firmware.
@@ -170,12 +172,12 @@ Challenges
 	LVM
 	Logical Volume Manager (LVM) is software that combines disks linearly, allowing the drives to appear to change size. The drives are buttressed against each other. This results in a JBOD (Just a Bunch Of Disks) array. There is no guarantee that drives underneath are identical, and in general, LVM doesn't care. However, to be presented as a single volume, the aggregation must be seamless. For ZAC/ZBD, this includes offsetting LBAs (as is current), but also to align different zone information (IOW the SAME field in the REPORT_ZONES cannot be set for the information passed up, although it may be set for each individual drive). The LVM could have a mix of zones that are different types and different sizes.
 
-	Work on LVM is scheduled to begin in October 2015.
+	Work on LVM has just began in October 2015.
 
 	mdraid
 	mdraid will require extensive changes. The drives will be arranged in a way that will require a combination of 1) overlapping zones 2) striping zones and 3) parity.
 
-	More to come on this later. Work is scheduled to begin in August 2015.
+	Planning and design has begun.
 
 	Page Cache
 
@@ -187,7 +189,7 @@ Challenges
 
 	Upon creation, the FS is created in a way that mimics the underlying device. Block Groups are laid out to match the zone alignments. Once created, the metadata in the FS mirrors the information in REPORT_ZONES at any given time (this removes massive performance penalties). The allocator is changed such that the writes are no longer random, but rather follow forward-write only rules. Upon mount, because of the criticalness of following forward-write only, the allocation bitmaps are scanned and checked for accuracy against the REPORT_ZONES information. This one rule requires multiple algorithm additions and enhancements inside the FS. While this initially introduces 2 control paths in the FS (one for conventional drives, and another for ZAC/ZBC), we expect that the ZAC/ZBC path will absorb all use cases from the conventional path. ZAC/ZBC will work on a conventional drive (although some information -- zone start and length -- need to be synthesized in SD).
 
-	Work on the FS (EXT4) is currently under development by Seagate.
+	Work on the FS (EXT4) is currently under development by Seagate.  This is the SMRFS project.
 
 	sysfs
 	Up to this point, all work has been committed to the kernelspace. There are utilities that work in userspace that will need the ZAC/ZBC information also. Many of these utilities take the place of the FS for a specific purpose. ZAC/ZBC zone information will need to be presented (and maintained) in sysfs from SD.
@@ -364,12 +366,14 @@ mdadm
 			Incorporated code, released
 
 	In Progress
-		v0.5 - expected November 2015
+		v0.5 - expected December 2015
+		Tweaking B+Tree code
+		Garbage collection development
 
 	To Be Done
-		v0.6 - expected November 2015
+		v0.6 - expected December 2015
 		v0.7 - expected December 2015
-		v0.8 - expected January 2016
+		v0.8 - expected TBA
 
 	Presentatons/Speaking Engagements
 		Linux Storage and FileSystems/Memory Management Summit 2015
@@ -445,7 +449,13 @@ mdadm
 	a) backup systems:
 		This case is Write Once, Read Many (if ever) -- WORM. Data is written strictly sequentially, either using no filesystem or a log-structured FS. Data can be written through to the end of the disk.
 
-10. Future Work
+10. Future/additional Work
+
+	Zoned Device Mapper (https://github.com/Seagate/ZDM-Device-Mapper)
+		A HA/HM drive to conventional mapping.  Uses CoW to allow any legacy FS to work on SMR drives.
+
+	SMR Multidrive
+		Building on top of SMRFFS and ZDM, Seaate is looking to incorporate SMR RAID solutions into the stack.
 
 11. Feedback
 
@@ -453,6 +463,9 @@ mdadm
 
 	This is a large project with major changes throughout the IO stack, and is expected to have to have groundbreaking acceptance when SMR drives saturate the market.  Until then, there is skepticism in the community.  This is expected for such a change.  We take this feedback from the open source community, as well as research from proprietary vendors, and the direction of other FS projects to come to the conclusion that this is a needed and beneficial project for the next generation of storage technology.
 
+	Contact
+
+	Post questions on github, or send email to maintainer (adrian.palmer@seagate.com).
 
 
 12. Legal
