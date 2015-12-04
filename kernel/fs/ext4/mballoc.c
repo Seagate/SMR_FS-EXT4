@@ -29,6 +29,8 @@
 #include <linux/backing-dev.h>
 #include <trace/events/ext4.h>
 
+#include "zoned.h"
+
 #ifdef CONFIG_EXT4_DEBUG
 ushort ext4_mballoc_debug __read_mostly;
 
@@ -757,22 +759,6 @@ void ext4_mb_generate_buddy(struct super_block *sb,
 		i = mb_find_last_free_region(bitmap, max);
 	else
 		i = mb_find_next_zero_bit(bitmap, max, 0);
-
-	ext4_smr_debug("group %u bit %u\n", group, i);
-#ifdef EXT4_SMR_DEBUG
-	{
-		ext4_grpblk_t j = mb_find_next_zero_bit(bitmap, max, 0);
-
-		if (i != j) {
-			ext4_smr_debug("i %u j %u\n", i, j);
-		}
-	}
-#endif	/* EXT4_SMR_DEBUG */
-
-	if (sbi->s_mount_flags & EXT4_MF_ZONED_HA)
-		i = mb_find_last_free_region(bitmap, max);
-	else
-		i = mb_find_next_zero_bit(bitmap, max, 0);
 #else
 	i = mb_find_next_zero_bit(bitmap, max, 0);
 #endif /* CONFIG_EXT4_SMR_HA */
@@ -793,8 +779,6 @@ void ext4_mb_generate_buddy(struct super_block *sb,
 	}
 
 	grp->bb_fragments = fragments;
-	ext4_smr_debug("%s: %d blocks %u fragments\n",
-		__func__, len, fragments);
 
 	if (free != grp->bb_free) {
 		ext4_grp_locked_error(sb, group, 0, 0,
@@ -820,6 +804,9 @@ void ext4_mb_generate_buddy(struct super_block *sb,
 	EXT4_SB(sb)->s_mb_buddies_generated++;
 	EXT4_SB(sb)->s_mb_generation_time += period;
 	spin_unlock(&EXT4_SB(sb)->s_bal_lock);
+
+	ext4_smr_debug("group %u offset %d len %d\n",
+		group, grp->bb_first_free, grp->bb_free);
 }
 
 static void mb_regenerate_buddy(struct ext4_buddy *e4b)
@@ -1319,8 +1306,6 @@ static void mb_clear_bits(void *bm, int cur, int len)
 {
 	__u32 *addr;
 
-	ext4_smr_debug("cur %d len %d\n", cur, len);
-
 	len = cur + len;
 	while (cur < len) {
 		if ((cur & 31) == 0 && (len - cur) >= 32) {
@@ -1402,8 +1387,6 @@ static void mb_buddy_mark_free(struct ext4_buddy *e4b, int first, int last)
 	int max;
 	int order = 1;
 	void *buddy = mb_find_buddy(e4b, order, &max);
-
-	ext4_smr_debug("first %d last %d\n", first, last);
 
 	while (buddy) {
 		void *buddy2;
@@ -1604,8 +1587,6 @@ static int mb_mark_used(struct ext4_buddy *e4b, struct ext4_free_extent *ex)
 	unsigned ret = 0;
 	int len0 = len;
 	void *buddy;
-
-	ext4_smr_debug("start %d len %d\n", start, len);
 
 	BUG_ON(start + len > (e4b->bd_sb->s_blocksize << 3));
 	BUG_ON(e4b->bd_group != ex->fe_group);
@@ -2156,6 +2137,9 @@ ext4_mb_regular_allocator(struct ext4_allocation_context *ac)
 	err = ext4_mb_find_by_goal(ac, &e4b);
 	if (err || ac->ac_status == AC_STATUS_FOUND)
 		goto out;
+#if 0
+	ext4_smr_debug("goal not found\n");
+#endif
 
 	if (unlikely(ac->ac_flags & EXT4_MB_HINT_GOAL_ONLY))
 		goto out;
@@ -2286,6 +2270,30 @@ repeat:
 out:
 	if (!err && ac->ac_status != AC_STATUS_FOUND && first_err)
 		err = first_err;
+
+#if 0
+	ext4_smr_debug("\n"
+		       "o group %d start %d len %d\n"	/* original request */
+	               "g group %d start %d len %d\n"	/* goal request */
+	               "b group %d start %d len %d\n"	/* best extent */
+	               "f group %d start %d len %d "	/* best extent pre-pa */
+		       "status %x flags %x\n",
+		ac->ac_o_ex.fe_group,
+		ac->ac_o_ex.fe_start,
+		ac->ac_o_ex.fe_len,
+		ac->ac_g_ex.fe_group,
+		ac->ac_g_ex.fe_start,
+		ac->ac_g_ex.fe_len,
+		ac->ac_b_ex.fe_group,
+		ac->ac_b_ex.fe_start,
+		ac->ac_b_ex.fe_len,
+		ac->ac_f_ex.fe_group,
+		ac->ac_f_ex.fe_start,
+		ac->ac_f_ex.fe_len,
+		ac->ac_status,
+		ac->ac_flags);
+	ext4_smr_debug("exit\n");
+#endif
 	return err;
 }
 
@@ -2861,8 +2869,16 @@ static void ext4_free_data_callback(struct super_block *sb,
 	count2++;
 	ext4_lock_group(sb, entry->efd_group);
 	/* Take it out of per group rb tree */
+#ifdef CONFIG_EXT4_SMR_HA
+	if ((EXT4_SB(sb)->s_mount_flags & EXT4_MF_ZONED_HA) == 0) {
+		rb_erase(&entry->efd_node, &(db->bb_free_root));
+		mb_free_blocks(NULL,
+			&e4b, entry->efd_start_cluster, entry->efd_count);
+	}
+#else
 	rb_erase(&entry->efd_node, &(db->bb_free_root));
 	mb_free_blocks(NULL, &e4b, entry->efd_start_cluster, entry->efd_count);
+#endif
 
 	/*
 	 * Clear the trimmed flag for the group so that the next
@@ -3090,8 +3106,6 @@ ext4_mb_normalize_request(struct ext4_allocation_context *ac,
 	 * required (it's a tail, for example) */
 	if (ac->ac_flags & EXT4_MB_HINT_NOPREALLOC)
 		return;
-
-	ext4_smr_debug("prealloc\n");
 
 	if (ac->ac_flags & EXT4_MB_HINT_GROUP_ALLOC) {
 		ext4_mb_normalize_group_request(ac);
@@ -3435,7 +3449,6 @@ ext4_mb_use_preallocated(struct ext4_allocation_context *ac)
 		/* found preallocated blocks, use them */
 		spin_lock(&pa->pa_lock);
 		if (pa->pa_deleted == 0 && pa->pa_free) {
-			ext4_smr_debug("using prealloc blocks\n");
 			atomic_inc(&pa->pa_count);
 			ext4_mb_use_inode_pa(ac, pa);
 			spin_unlock(&pa->pa_lock);
@@ -4172,7 +4185,9 @@ static void ext4_mb_group_or_file(struct ext4_allocation_context *ac)
 #ifdef CONFIG_EXT4_SMR_HA
 	/* Disable preallocation for zoned devices */
 	if (sbi->s_mount_flags & EXT4_MF_ZONED_HA) {
-		ac->ac_flags |= EXT4_MB_HINT_NOPREALLOC;
+		ac->ac_flags |=
+			EXT4_MB_HINT_TRY_GOAL |
+			EXT4_MB_HINT_NOPREALLOC;
 		return;
 	}
 #endif
@@ -4247,6 +4262,11 @@ ext4_mb_initialize_context(struct ext4_allocation_context *ac,
 		goal = le32_to_cpu(es->s_first_data_block);
 	ext4_get_group_no_and_offset(sb, goal, &group, &block);
 
+#if 0
+	ext4_smr_debug("group %u offset %d len %u next %u fs block %lld\n",
+		group, block, ar->len, block + len, goal);
+#endif
+
 	/* set up allocation goals */
 	ac->ac_b_ex.fe_logical = EXT4_LBLK_CMASK(sbi, ar->logical);
 	ac->ac_status = AC_STATUS_CONTINUE;
@@ -4270,6 +4290,15 @@ ext4_mb_initialize_context(struct ext4_allocation_context *ac,
 			(unsigned) ar->lleft, (unsigned) ar->pleft,
 			(unsigned) ar->lright, (unsigned) ar->pright,
 			atomic_read(&ar->inode->i_writecount) ? "" : "non-");
+#if 0
+	ext4_smr_debug("init ac: %u blocks @ %u, goal %u, flags %x, 2^%d, "
+			"left: %u/%u, right %u/%u to %swritable\n",
+			(unsigned) ar->len, (unsigned) ar->logical,
+			(unsigned) ar->goal, ac->ac_flags, ac->ac_2order,
+			(unsigned) ar->lleft, (unsigned) ar->pleft,
+			(unsigned) ar->lright, (unsigned) ar->pright,
+			atomic_read(&ar->inode->i_writecount) ? "" : "non-");
+#endif
 	return 0;
 
 }
@@ -4480,13 +4509,19 @@ ext4_fsblk_t ext4_mb_new_blocks(handle_t *handle,
 	unsigned int inquota = 0;
 	unsigned int reserv_clstrs = 0;
 
-	ext4_smr_debug("enter - len %u\n", ar->len);
+#if 0
+	ext4_smr_debug("enter\n");
+#endif
 
 	might_sleep();
 	sb = ar->inode->i_sb;
 	sbi = EXT4_SB(sb);
 
 	trace_ext4_request_blocks(ar);
+#if 0
+	ext4_smr_debug("len %u logical %u goal %lld\n",
+		ar->len, ar->logical, ar->goal);
+#endif
 
 	/* Allow to use superuser reservation for quota file */
 	if (IS_NOQUOTA(ar->inode))
@@ -4611,9 +4646,6 @@ out:
 
 	trace_ext4_allocate_blocks(ar, (unsigned long long)block);
 
-	ext4_smr_debug("exit - len %u inquota %u block %lld\n",
-		ar->len, inquota, block);
-
 	return block;
 }
 
@@ -4700,6 +4732,7 @@ ext4_mb_free_metadata(handle_t *handle, struct ext4_buddy *e4b,
 		    ext4_journal_callback_try_del(handle, &entry->efd_jce)) {
 			new_entry->efd_count += entry->efd_count;
 			rb_erase(node, &(db->bb_free_root));
+
 			kmem_cache_free(ext4_free_data_cachep, entry);
 		}
 	}

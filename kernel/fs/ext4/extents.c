@@ -4284,8 +4284,6 @@ int ext4_ext_map_blocks(handle_t *handle, struct inode *inode,
 	int set_unwritten = 0;
 	bool map_from_cluster = false;
 
-	ext_debug("blocks %u/%u requested for inode %lu\n",
-		  map->m_lblk, map->m_len, inode->i_ino);
 	trace_ext4_ext_map_blocks_enter(inode, map->m_lblk, map->m_len, flags);
 
 	/* find extent for this block */

@@ -48,6 +48,8 @@ static int fsync_buffers_list(spinlock_t *lock, struct list_head *list);
 static int submit_bh_wbc(int rw, struct buffer_head *bh,
 			 unsigned long bio_flags,
 			 struct writeback_control *wbc);
+static int __block_write_begin_2(struct page *page, loff_t pos,
+	unsigned len, get_block_t *get_block, remap_block_t *remap_block);
 
 #define BH_ENTRY(list) list_entry((list), struct buffer_head, b_assoc_buffers)
 
@@ -1905,6 +1907,18 @@ EXPORT_SYMBOL(page_zero_new_buffers);
 int __block_write_begin(struct page *page, loff_t pos, unsigned len,
 		get_block_t *get_block)
 {
+	return __block_write_begin_2(page, pos, len, get_block, NULL);
+}
+
+int __block_write_begin_remap(struct page *page, loff_t pos, unsigned len,
+		get_block_t *get_block, remap_block_t *remap_block)
+{
+	return __block_write_begin_2(page, pos, len, get_block, remap_block);
+}
+
+int __block_write_begin_2(struct page *page, loff_t pos, unsigned len,
+		get_block_t *get_block, remap_block_t *remap_block)
+{
 	unsigned from = pos & (PAGE_CACHE_SIZE - 1);
 	unsigned to = from + len;
 	struct inode *inode = page->mapping->host;
@@ -1958,6 +1972,8 @@ int __block_write_begin(struct page *page, loff_t pos, unsigned len,
 				continue;
 			}
 		}
+		else if (remap_block)
+			err = remap_block(inode, block, bh);
 		if (PageUptodate(page)) {
 			if (!buffer_uptodate(bh))
 				set_buffer_uptodate(bh);

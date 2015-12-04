@@ -215,6 +215,8 @@ int block_write_begin(struct address_space *mapping, loff_t pos, unsigned len,
 		unsigned flags, struct page **pagep, get_block_t *get_block);
 int __block_write_begin(struct page *page, loff_t pos, unsigned len,
 		get_block_t *get_block);
+int __block_write_begin_remap(struct page *page, loff_t pos, unsigned len,
+		get_block_t *get_block, remap_block_t *remap);
 int block_write_end(struct file *, struct address_space *,
 				loff_t, unsigned, unsigned,
 				struct page *, void *);

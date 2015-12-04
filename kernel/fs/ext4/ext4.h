@@ -32,6 +32,7 @@
 #include <linux/ratelimit.h>
 #include <crypto/hash.h>
 #include <linux/falloc.h>
+#include <linux/blk-zoned-ctrl.h>
 #ifdef __KERNEL__
 #include <linux/compat.h>
 #endif
@@ -79,13 +80,13 @@
 	ext4_error_file((file), __func__, __LINE__, (block), (fmt), ## a)
 
 #ifdef CONFIG_EXT4_SMR_HA
-#define EXT4_SMR_DEBUG 		/* enable for SMR debug */
+#undef EXT4_SMR_DEBUG 		/* enable for SMR debug */
 #endif
 
 #ifdef EXT4_SMR_DEBUG
 #define ext4_smr_debug(f, a...)				\
 	do {						\
-		pr_info("SMR: %s:" f, __func__, ## a);	\
+		pr_info("%s: " f, __func__, ## a);	\
 	} while (0)
 #else
 #define ext4_smr_debug(fmt, ...)	no_printk(fmt, ##__VA_ARGS__)
@@ -637,7 +638,7 @@ enum {
 #define EXT4_IOC_GET_ENCRYPTION_POLICY	_IOW('f', 21, struct ext4_encryption_policy)
 
 /* seagate: report zones: T13 -> 0x4A: REPORT_ZONES */
-#define EXT4_IOC_REPORT_ZONES       	_IOWR('f', 19, struct bdev_zone_report_ioctl_t)
+#define EXT4_IOC_REPORT_ZONES       	_IOWR('f', 19, struct bdev_zone_report_io)
 #define EXT4_IOC_RESET_WP       	_IO('f', 20)
 #define EXT4_IOC_INQUIRY       	_IOWR('f', 21, struct zoned_inquiry)
 
@@ -1226,7 +1227,7 @@ struct ext4_super_block {
 #define EXT4_MF_FS_ABORTED		0x0002	/* Fatal error detected */
 #define EXT4_MF_TEST_DUMMY_ENCRYPTION	0x0004
 #define EXT4_MF_ZONED			0x0008	/* Zoned device detected */
-#define EXT4_MF_ZONED_HA		0x000A	/* Zoned host-aware device detected */
+#define EXT4_MF_ZONED_HA		0x0010	/* Zoned host-aware device detected */
 
 #ifdef CONFIG_EXT4_FS_ENCRYPTION
 #define DUMMY_ENCRYPTION_ENABLED(sbi) (unlikely((sbi)->s_mount_flags & \
@@ -2343,6 +2344,8 @@ int ext4_get_block(struct inode *inode, sector_t iblock,
 				struct buffer_head *bh_result, int create);
 int ext4_da_get_block_prep(struct inode *inode, sector_t iblock,
 			   struct buffer_head *bh, int create);
+int ext4_block_remap(struct inode *inode, sector_t iblock,
+			   struct buffer_head *bh);
 int ext4_walk_page_buffers(handle_t *handle,
 			   struct buffer_head *head,
 			   unsigned from,

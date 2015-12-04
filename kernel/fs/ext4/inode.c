@@ -36,6 +36,7 @@
 #include <linux/printk.h>
 #include <linux/slab.h>
 #include <linux/bitops.h>
+#include <linux/backing-dev.h>
 
 #include "ext4_jbd2.h"
 #include "xattr.h"
@@ -981,6 +982,9 @@ static int ext4_write_begin(struct file *file, struct address_space *mapping,
 	pgoff_t index;
 	unsigned from, to;
 
+	ext4_smr_debug("inode %lu pos %lld len %u\n",
+		file->f_inode->i_ino, pos, len);
+
 	trace_ext4_write_begin(inode, pos, len, flags);
 	/*
 	 * Reserve one block more for addition to orphan list in case
@@ -1039,10 +1043,28 @@ retry_journal:
 		ret = ext4_block_write_begin(page, pos, len,
 					     ext4_get_block);
 #else
+#ifdef CONFIG_EXT4_SMR_HA
+	if (EXT4_SB(inode->i_sb)->s_mount_flags & EXT4_MF_ZONED_HA)
+		if (ext4_should_dioread_nolock(inode))
+			ret = __block_write_begin_remap(page, pos, len,
+				ext4_get_block_write, ext4_block_remap);
+		else
+			ret = __block_write_begin_remap(page, pos, len,
+				ext4_get_block, ext4_block_remap);
+	else
+		if (ext4_should_dioread_nolock(inode))
+			ret = __block_write_begin(page,
+				pos, len, ext4_get_block_write);
+		else
+			ret = __block_write_begin(page,
+				pos, len, ext4_get_block);
+
+#else
 	if (ext4_should_dioread_nolock(inode))
 		ret = __block_write_begin(page, pos, len, ext4_get_block_write);
 	else
 		ret = __block_write_begin(page, pos, len, ext4_get_block);
+#endif
 #endif
 	if (!ret && ext4_should_journal_data(inode)) {
 		ret = ext4_walk_page_buffers(handle, page_buffers(page),
@@ -1649,6 +1671,67 @@ int ext4_da_get_block_prep(struct inode *inode, sector_t iblock,
 		set_buffer_mapped(bh);
 	}
 	return 0;
+}
+
+/*
+ * Remap block.
+ */
+int ext4_block_remap(struct inode *inode, sector_t iblock,
+			   struct buffer_head *bh)
+{
+	int err = 0;
+	int err2 = 0;
+	handle_t *handle;
+
+	ext4_smr_debug("inode %lu block %lld\n",
+		inode->i_ino, (unsigned long long)iblock);
+
+	handle = ext4_journal_start(inode, EXT4_HT_MAP_BLOCKS, 2);
+	if (IS_ERR(handle)) {
+		err = PTR_ERR(handle);
+		return err;
+	}
+
+	ext4_mark_inode_dirty(handle, inode);
+
+	if (ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS)) {
+		down_write(&EXT4_I(inode)->i_data_sem);
+
+retry:
+		err = ext4_es_remove_extent(inode, iblock, 1);
+
+		if (err == -ENOMEM) {
+			cond_resched();
+			congestion_wait(BLK_RW_ASYNC, HZ/50);
+			goto retry;
+		}
+		if (err) {
+			up_write(&EXT4_I(inode)->i_data_sem);
+			goto errout;
+		}
+
+		err = ext4_ext_remove_space(inode, iblock, iblock);
+		up_write(&EXT4_I(inode)->i_data_sem);
+
+		if (err)
+			goto errout;
+		else
+			clear_buffer_mapped(bh);
+	}
+	else {
+		/* Just inode and one data block will be modified... */
+		err = ext4_ind_remove_space(handle, inode, iblock, iblock);
+
+		if (err)
+			goto errout;
+	}
+
+	err = ext4_da_get_block_prep(inode, iblock, bh, 1);
+
+errout:
+	err2 = ext4_journal_stop(handle);
+
+	return err ? : err2;
 }
 
 static int bget_one(handle_t *handle, struct buffer_head *bh)
@@ -2681,7 +2764,8 @@ retry_journal:
 	ret = ext4_block_write_begin(page, pos, len,
 				     ext4_da_get_block_prep);
 #else
-	ret = __block_write_begin(page, pos, len, ext4_da_get_block_prep);
+	ret = __block_write_begin_remap(page, pos, len,
+		ext4_da_get_block_prep, ext4_block_remap);
 #endif
 	if (ret < 0) {
 		unlock_page(page);

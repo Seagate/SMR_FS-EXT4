@@ -1,7 +1,7 @@
 README - SMRFFS-EXT4
 Seagate Technologies LLC
 Lead Engineer: Adrian Palmer
-November 2015
+December 2015
 
 Table of Contents
 
@@ -209,6 +209,9 @@ mke2fs
 	4. New Extent layout
 	
 	*incompatible with EXT2/3/4 indirect lists
+
+	December 2015
+		Various fixes aligning structures to zone boundaries: block groups and journal location/size.
 
 hdparm
 	Finished: Reworked by Seagate
@@ -455,7 +458,7 @@ mdadm
 		A HA/HM drive to conventional mapping.  Uses CoW to allow any legacy FS to work on SMR drives.
 
 	SMR Multidrive
-		Building on top of SMRFFS and ZDM, Seaate is looking to incorporate SMR RAID solutions into the stack.
+		Building on top of SMRFFS and ZDM, Seagate is looking to incorporate SMR RAID solutions into the stack.
 
 11. Feedback
 

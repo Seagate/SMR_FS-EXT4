@@ -11,204 +11,33 @@
  * warranty of any kind, whether express or implied.
  */
 
-#ifndef BLK_ZONED_H
-#define BLK_ZONED_H
+#ifndef BLK_ZONED_CTRL_H
+#define BLK_ZONED_CTRL_H
 
-enum zone_report_option {
-	ZOPT_NON_SEQ_AND_RESET   = 0x00,
-	ZOPT_ZC1_EMPTY,
-	ZOPT_ZC2_OPEN_IMPLICIT,
-	ZOPT_ZC3_OPEN_EXPLICIT,
-	ZOPT_ZC4_CLOSED,
-	ZOPT_ZC5_FULL,
-	ZOPT_ZC6_READ_ONLY,
-	ZOPT_ZC7_OFFLINE,
-	ZOPT_RESET               = 0x10,
-	ZOPT_NON_SEQ             = 0x11,
-	ZOPT_NON_WP_ZONES        = 0x3f,
-
-	ZOPT_USE_ATA_PASS        = 0x80,
-
-};
-
-/* Report, close, finish, open, reset wp: */
-enum zone_zm_action {
-	REPORT_ZONES_EXT   = 0x00,
-	CLOSE_ZONE_EXT,
-	FINISH_ZONE_EXT,
-	OPEN_ZONE_EXT,
-	RESET_WP_EXT,
-};
-
-struct bdev_zone_report_request_t {
-	__u64 zone_locator_lba;	  /* starting lba for first zone to be reported. */
-	__u32 return_page_count;  /* number of bytes allocated for result */
-	__u8  report_option;	  /* see: zone_report_option enum */
-};
-
-enum bdev_zone_type {
-	ZTYP_RESERVED            = 0,
-	ZTYP_CONVENTIONAL        = 1,
-	ZTYP_SEQ_WRITE_REQUIRED  = 2,
-	ZTYP_SEQ_WRITE_PREFERRED = 3,
-};
-
-enum bdev_zone_condition {
-	ZCOND_CONVENTIONAL       = 0, /* no write pointer */
-	ZCOND_ZC1_EMPTY          = 1,
-	ZCOND_ZC2_OPEN_IMPLICIT  = 2,
-	ZCOND_ZC3_OPEN_EXPLICIT  = 3,
-	ZCOND_ZC4_CLOSED         = 4,
-	/* 5 - 0xC - reserved */
-	ZCOND_ZC6_READ_ONLY      = 0xd,
-	ZCOND_ZC5_FULL           = 0xe,
-	ZCOND_ZC7_OFFLINE        = 0xf,
-};
-
-/* NOTE: all LBA's are u64 only use the lower 48 bits */
-
-struct bdev_zone_descriptor_entry_t {
-	u8  type;         /* see zone_type enum */
-	u8  flags;        /* 0:reset, 1:non-seq, 2-3: resv,
-                           * bits 4-7: see zone_condition enum */
-	u8  reserved1[6];
-	u64 length;       /* length of zone: in sectors */
-	u64 lba_start;    /* lba of zone start */
-	u64 lba_wptr;     /* lba of write pointer - ready to be written
-			   * next */
-        u8 reserved[32];
-} __packed;
-
-enum bdev_zone_same {
-	ZS_ALL_DIFFERENT        = 0,
-	ZS_ALL_SAME             = 1,
-	ZS_LAST_DIFFERS         = 2,
-	ZS_SAME_LEN_DIFF_TYPES  = 3,
-};
-
-struct bdev_zone_report_result_t {
-	u32 descriptor_count;   /* number of zone_descriptor entries that 
-				 * follow */
-	u8  same_field;         /* bits 0-3: enum zone_same (MASK: 0x0F) */
-	u8  reserved1[3];
-	u64 maximum_lba;        /* The MAXIMUM LBA field indicates the 
-				 * LBA of the last logical sector on the
-				 * device, including all logical sectors
-				 * in all zones. */
-	u8  reserved2[48];
-	struct bdev_zone_descriptor_entry_t descriptors[0];
-} __packed;
-
-struct bdev_zone_report_ioctl_t {
-	union {
-		struct bdev_zone_report_request_t in;
-		struct bdev_zone_report_result_t out;
-	} data;
-} __packed;
-
-
-/**
- * According to the test result,
- *  SEAGATE driver do not support this option,
- *  need renew this definition in future
- */
-typedef enum zc_report_options {
-	ZC_RO_RESET = 0x00,
-	ZC_RO_OFFLINE = 0x01,
-	ZC_RO_RDONLY = 0x02,
-	ZC_RO_FULL = 0x03,
-	ZC_RO_OP_NOT_READY = 0x4,
-	ZC_RO_ALL = 0xF,
-} zc_report_options_t;
-
-/**
- * Flags to determine if the connected disk is ZONED:
- *   - Host Aware of Host Managed (or not)
- */
-typedef enum zc_type {
-	NOT_ZONED    = 0x00,
-	HOST_AWARE   = 0x01,
-	HOST_MANAGE  = 0x02,
-} zc_type_t;
-
-typedef enum zc_vendor_type {
-	ZONE_DEV_ATA_SEAGATE = 0x00,
-	ZONE_DEV_BLK         = 0x01,
-} zc_vendor_type_t;
-
-struct zoned_inquiry {
-	u8  evpd;
-	u8  pg_op;
-	u16 mx_resp_len;
-	u8  result[0];
-} __packed;
-typedef struct zoned_inquiry zoned_inquiry_t;
-
-/* ata passthrough variant */
-struct zoned_identity {
-	u8 type_id;
-	u8 reserved[3];
-} __packed;
-typedef struct zoned_identity zoned_identity_t;
-
-/*0xC6: Seagate SMR aware band configuration log*/
-typedef enum zc_zone_type {
-	ZC_TYPE_CONVENTIONAL  = 0x00,
-	ZC_TYPE_HOST_ASSISTED = 0x01,	/* sequential write preferred */
-	ZC_TYPE_HOST_MANAGED  = 0x02,	/* sequential write required  */
-} zc_zone_type_t;
-
-/*0xC6: Seagate SMR aware band configuration log*/
-typedef enum zc_zone_condition {
-	ZC_CON_RESET        = 0x00,
-	ZC_CON_OFFLINE      = 0x01,
-	ZC_CON_RDONLY       = 0x02,
-	ZC_CON_FULL         = 0x03,
-	ZC_CON_OP_NOT_READY = 0x4,
-} zc_zone_condition_t;
-
-/* zone descriptor format, device controller reports this infomation
- * REPORT ZONES */
-typedef struct zc_zone {
-	zc_zone_type_t      zone_type;
-	zc_zone_condition_t zone_condition;
-	u64 zone_id;		/* Optional */
-	u64 zone_length;
-	u64 zone_start_lba;
-	u64 zone_write_pointer;
-} zc_zone_t;
-
+#include <uapi/linux/blk-zoned-ctrl.h>
 
 /* this is basically scsi_execute */
-int blk_cmd_execute(struct request_queue *queue,
-			   const unsigned char *cmd,
-			   int data_direction,
-			   void *buffer,
-			   unsigned bufflen,
-			   unsigned char *sense,
-			   int timeout,
-			   int retries,
-			   u64 flags,
-			   int *resid);
-int blk_cmd_with_sense(struct gendisk *disk,
-	u8 * cmd, int data_direction,
-	u8 * buf, u32 buf_len, u8 * sense_buffer);
+int blk_cmd_execute(struct request_queue *, const unsigned char *, int, void *,
+		    unsigned, unsigned char *, int, int, u64, int *);
+int blk_cmd_with_sense(struct gendisk *, u8 *, int, void *, u32 len, u8 *);
 
 /* scsi zbc commands */
-int blk_zoned_report(struct gendisk *, u64, u8, u8 *, size_t);
 int blk_zoned_inquiry(struct gendisk *, u8, u8, u16, u8 *);
 int blk_zoned_close(struct gendisk *disk, u64 start_lba);
 int blk_zoned_finish(struct gendisk *disk, u64 start_lba);
 int blk_zoned_open(struct gendisk *disk, u64 start_lba);
 int blk_zoned_reset_wp(struct gendisk *disk, u64 start_lba);
+int blk_zoned_report(struct gendisk *, u64, u8,
+		     struct bdev_zone_report *, size_t);
 
 /* ata zac variants */
-int blk_zoned_report_ata(struct gendisk *disk, u64, u8, u8 *, size_t);
-int blk_zoned_identify_ata(struct gendisk *disk, zoned_identity_t *);
+int blk_zoned_identify_ata(struct gendisk *disk, struct zoned_identity *);
 int blk_zoned_close_ata(struct gendisk *disk, u64 start_lba);
 int blk_zoned_finish_ata(struct gendisk *disk, u64 start_lba);
 int blk_zoned_open_ata(struct gendisk *disk, u64 start_lba);
 int blk_zoned_reset_wp_ata(struct gendisk *disk, u64 start_lba);
+int blk_zoned_report_ata(struct gendisk *disk, u64, u8,
+			 struct bdev_zone_report *, size_t);
 
 /* device type agnostic commands */
 bool blk_is_zoned(struct gendisk *disk, bool *is_host_aware);
@@ -221,5 +50,4 @@ int _zone_open_ioctl(struct gendisk *disk, unsigned long arg);
 int _reset_wp_ioctl(struct gendisk *disk, unsigned long arg);
 int _report_zones_ioctl(struct gendisk *disk, void __user *parg);
 
-
-#endif /* INT_BLK_ZONED_H */
+#endif /* BLK_ZONED_CTRL_H */

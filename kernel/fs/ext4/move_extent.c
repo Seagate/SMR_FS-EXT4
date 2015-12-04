@@ -380,8 +380,17 @@ data_copy:
 	}
 	/* Perform all necessary steps similar write_begin()/write_end()
 	 * but keeping in mind that i_size will not change */
+#ifdef CONFIG_EXT4_SMR_HA
+	if (EXT4_SB(sb)->s_mount_flags & EXT4_MF_ZONED_HA)
+		*err = __block_write_begin_remap(pagep[0], from, replaced_size,
+				ext4_get_block, ext4_block_remap);
+	else
+		*err = __block_write_begin(pagep[0], from, replaced_size,
+					   ext4_get_block);
+#else
 	*err = __block_write_begin(pagep[0], from, replaced_size,
 				   ext4_get_block);
+#endif
 	if (!*err)
 		*err = block_commit_write(pagep[0], from, from + replaced_size);
 
